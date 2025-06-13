@@ -6,6 +6,7 @@ from msgraph import GraphServiceClient
 from msgraph.generated.models.o_data_errors.o_data_error import ODataError
 from azure.data.tables import TableServiceClient
 import datetime
+from .create_planner import create_planner_for_team, list_available_plans
 
 
 # Konstanter for tabellnavn og partisjonsnøkler
@@ -89,12 +90,14 @@ async def initialize_graph_client() -> Tuple[GraphServiceClient, Set[str]]:
     
     return client, processed_team_ids
 
-async def process_team(team, processed_team_ids: Set[str]) -> Optional[Dict]:
+
+async def process_team(team, client, processed_team_ids: Set[str]) -> Optional[Dict]:
     """
     Prosesserer et enkelt team og markerer det som prosessert hvis det er nytt.
     
     Args:
         team: Team objekt fra Graph API
+        client: Graph API klient
         processed_team_ids: Mengde med allerede prosesserte team-IDer
         
     Returns:
@@ -106,20 +109,28 @@ async def process_team(team, processed_team_ids: Set[str]) -> Optional[Dict]:
     
     logging.info(f"Fant nytt team: {team.id} ({team.display_name})")
     
-    # Marker team som prosessert
+    # Lag en ny planner for teamet og marker team som prosessert
     try:
-        await mark_team_as_processed(team.id)
-        processed_team_ids.add(team.id)
-        logging.info(f"Markerte team {team.id} som prosessert")
+        planner_result = True # await create_planner_for_team(client, team.id)
+
+        if planner_result:
+            processed_team_ids.add(team.id)
+            logging.info(f"Opprettet planner og markerte team {team.id} som prosessert")
+        else:
+            logging.error(f"Kunne ikke opprette planner for team {team.id}")
+            return None
     except Exception as e:
-        logging.error(f"Kunne ikke markere team {team.id} som prosessert: {str(e)}")
+        logging.error(f"Kunne ikke prosessere team {team.id}: {str(e)}")
+        return None
     
     return {
         'id': team.id,
         'displayName': team.display_name,
         'visibility': team.visibility,
-        'isProcessed': False,
+        'isProcessed': True,
+        #'plannerId': planner_result.get('planId') if planner_result else None
     }
+
 
 async def get_teams_async() -> Dict:
     """
@@ -140,7 +151,7 @@ async def get_teams_async() -> Dict:
         while teams_response:
             if teams_response.value:
                 for team in teams_response.value:
-                    team_data = await process_team(team, processed_team_ids)
+                    team_data = await process_team(team, client, processed_team_ids)
                     if team_data:
                         new_teams_list.append(team_data)
             
