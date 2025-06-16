@@ -1,7 +1,7 @@
 import logging
 import json
 import azure.functions as func
-from teamsplanner.get_teams import get_teams_async
+from teamsplanner.get_teams import TeamsProcessor
 
 app = func.FunctionApp()
 
@@ -20,7 +20,9 @@ async def teams_endpoint(req: func.HttpRequest) -> func.HttpResponse:
     logging.info('Python HTTP trigger function processed a request.')
     
     try:
-        response_data = await get_teams_async()
+        processor = TeamsProcessor()
+        # Automatisk initialisering ved første kall
+        response_data = await processor.get_teams_async()
         
         logging.info(f'Successfully retrieved {response_data["count"]} teams.')
         
