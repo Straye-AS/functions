@@ -37,7 +37,7 @@ async def teams_endpoint(req: func.HttpRequest) -> func.HttpResponse:
         # Automatisk initialisering ved første kall
         response_data = "test" #await processor.get_teams_async()
         
-        logging.info(f'Successfully retrieved {response_data["count"]} teams.')
+        logging.info(f'Successfully retrieved {len(response_data)} teams.')
         
         return func.HttpResponse(
             body=json.dumps(response_data),
