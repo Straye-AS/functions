@@ -175,9 +175,6 @@ class TeamsProcessor:
             while teams_response:
                 if teams_response.value:
                     for team in teams_response.value:
-                        # TODO: Remove for production
-                        if "test" not in team.display_name:
-                            continue
                         team_data = await self.process_team(team)
                         if team_data:
                             new_teams_list.append(team_data)

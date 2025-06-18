@@ -5,13 +5,26 @@ from teamsplanner.get_teams import TeamsProcessor
 
 app = func.FunctionApp()
 
-@app.timer_trigger(schedule="0 * * * * *", arg_name="myTimer", run_on_startup=False,
+@app.timer_trigger(schedule="0 * * * * *", arg_name="teamsTimer", run_on_startup=False,
               use_monitor=False) 
-def teamsplanner(myTimer: func.TimerRequest) -> None:
-    if myTimer.past_due:
+async def teamsplanner(teamsTimer: func.TimerRequest) -> None:
+    if teamsTimer.past_due:
         logging.info('The timer is past due!')
 
-    logging.info('Python timer trigger function executed.')
+    try:
+        processor = TeamsProcessor()
+        # Automatisk initialisering ved første kall
+        response_data = await processor.get_teams_async()
+        
+        logging.info(f'Success! {response_data}')
+        
+    except Exception as e:
+        error_response = {
+            "error": str(e),
+            "status": "error"
+        }
+        
+        logging.error(f'Error retrieving teams: {error_response}')
 
 @app.function_name(name="get_teams")
 @app.route(route="teams")

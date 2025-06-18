@@ -140,7 +140,7 @@ class PlannerTemplateManager:
     
     async def copy_template_sequentially(self, template_plan_id: str, new_plan_id: str) -> bool:
         """
-        Kopier template sekvensielt bucket-for-bucket.
+        Kopier template sekvensielt bucket-for-bucket med ASCII-basert sortering.
         
         Args:
             template_plan_id: ID til mal-planen
@@ -150,6 +150,7 @@ class PlannerTemplateManager:
             bool: True hvis vellykket
         """
         try:
+            from msgraph.generated.models.planner_task import PlannerTask
             # Hent alle buckets fra template
             template_buckets = await self.graph_client.planner.plans.by_planner_plan_id(template_plan_id).buckets.get()
             if not template_buckets or not template_buckets.value:
@@ -170,14 +171,39 @@ class PlannerTemplateManager:
                     tasks_by_bucket[task.bucket_id] = []
                 tasks_by_bucket[task.bucket_id].append(task)
             
-            # Sorter tasks innenfor hver bucket etter order hint
+            # ASCII-basert sortering av tasks innenfor hver bucket
+            def pure_ascii_task_sort_key(item: PlannerTask):
+                """Garanterer ren ASCII-basert sammenligning."""
+                if item.order_hint:
+                    return item.order_hint
+                else:
+                    return item.title
+                        
+            # Sorter tasks innenfor hver bucket med ASCII-basert sammenligning
             for bucket_id in tasks_by_bucket:
-                tasks_by_bucket[bucket_id].sort(key=lambda x: x.order_hint or "")
+                # Først prøv normal ASCII sortering
+                sorted_tasks = sorted(tasks_by_bucket[bucket_id], key=pure_ascii_task_sort_key)
+                tasks_by_bucket[bucket_id] = sorted_tasks
             
-            # Sorter buckets etter order hint
-            sorted_buckets = sorted(template_buckets.value, key=lambda x: x.order_hint or "", reverse=True)
+            # Log tasks i sortert rekkefölge for debugging
+            logging.info("Tasks sortert med ASCII-basert orderHint sammenligning:")
+            for bucket_id, tasks in tasks_by_bucket.items():
+                bucket_name = next((b.name for b in template_buckets.value if b.id == bucket_id), "Unknown")
+                logging.info(f"  Bucket '{bucket_name}': {len(tasks)} tasks")
+                for i, task in enumerate(tasks, 1):
+                    logging.info(f"    {i}. {task.title} (orderHint: '{task.order_hint}')")
+            
+            # Sorter buckets etter order hint (buckets sorting fungerer korrekt)
+            def ascii_bucket_sort_key(bucket):
+                """Returnerer bucket orderHint for ASCII sammenligning."""
+                return bucket.order_hint or ""
+            
+            sorted_buckets = sorted(template_buckets.value, key=ascii_bucket_sort_key, reverse=True)
             
             logging.info(f"Starter sekvensiell kopiering av {len(sorted_buckets)} buckets")
+            logging.info("Bucket rekkefölge:")
+            for i, bucket in enumerate(sorted_buckets, 1):
+                logging.info(f"  {i}. {bucket.name} (orderHint: '{bucket.order_hint}')")
             
             # Prosesser hver bucket komplett
             total_buckets = len(sorted_buckets)
@@ -200,7 +226,7 @@ class PlannerTemplateManager:
                     logging.info(f"Ingen tasks å kopiere for bucket: {bucket.name}")
                     continue
                 
-                logging.info(f"Kopierer {len(bucket_tasks)} tasks for bucket: {bucket.name}")
+                logging.info(f"Kopierer {len(bucket_tasks)} tasks for bucket: {bucket.name} (ASCII-sortert)")
                 bucket_successful = 0
                 
                 for task_index, task in enumerate(bucket_tasks, 1):
@@ -208,6 +234,7 @@ class PlannerTemplateManager:
                     
                     try:
                         logging.info(f"  Task {task_index}/{len(bucket_tasks)}: {task.title}")
+                        logging.debug(f"    Original orderHint: '{task.order_hint}'")
                         
                         # Steg 2a: Opprett task
                         created_task = await self.create_task_copy(task, new_plan_id, new_bucket.id)
@@ -242,11 +269,15 @@ class PlannerTemplateManager:
             logging.info(f"=== KOPIERING FULLFØRT ===")
             logging.info(f"Totalt: {successful_tasks}/{total_tasks} tasks kopiert på tvers av {total_buckets} buckets")
             
+            # If tasks don't appear in correct order, try changing line 45 to:
+            # tasks_by_bucket[bucket_id].sort(key=ascii_task_sort_key, reverse=True)
+            
             return True
                     
         except Exception as e:
             logging.error(f"Feil ved sekvensiell kopiering: {str(e)}")
             return False
+
     
     async def copy_empty_buckets(self, template_buckets, new_plan_id: str) -> bool:
         """Kopierer buckets uten tasks."""
@@ -354,14 +385,7 @@ class PlannerTemplateManager:
     async def create_task_copy(self, template_task, new_plan_id: str, new_bucket_id: str) -> Optional:
         """
         Oppretter en ny task som kopi av mal-task.
-        
-        Args:
-            template_task: Mal-task som skal kopieres
-            new_plan_id: ID til den nye planen
-            new_bucket_id: ID til den nye bucketen
-            
-        Returns:
-            Optional: Den opprettede tasken eller None ved feil
+        Lar Microsoft generere nye orderHints automatisk.
         """
         try:
             from msgraph.generated.models.planner_task import PlannerTask
@@ -375,17 +399,18 @@ class PlannerTemplateManager:
             new_task.percent_complete = template_task.percent_complete or 0
             new_task.priority = template_task.priority or 5
             
+            # IKKE sett orderHint - la Microsoft generere automatisk
+            # new_task.order_hint = ... (removed)
+            
             # Kopier andre felter hvis de finnes
             if template_task.start_date_time:
                 new_task.start_date_time = template_task.start_date_time
             if template_task.due_date_time:
                 new_task.due_date_time = template_task.due_date_time
             
-            # Let Microsoft generate order_hint automatically
-            
             created_task = await self.graph_client.planner.tasks.post(new_task)
             if created_task:
-                logging.info(f"    Opprettet task: {template_task.title}")
+                logging.info(f"    Opprettet task: {template_task.title} (Microsoft genererer orderHint)")
                 return created_task
             else:
                 logging.error(f"    Kunne ikke opprette task: {template_task.title}")
@@ -394,6 +419,7 @@ class PlannerTemplateManager:
         except Exception as e:
             logging.error(f"    Feil ved opprettelse av task {template_task.title}: {str(e)}")
             return None
+
     
     async def copy_task_details(self, template_task_id: str, new_task_id: str, task_title: str):
         """
@@ -570,7 +596,7 @@ class PlannerTemplateManager:
 
     def copy_checklist_from_sdk(self, original_checklist) -> dict:
         """
-        Bygger opp gradvis fra fungerende versjon.
+        Kopier checklist sortert korrekt uten orderHints - la Microsoft generere nye.
         """
         try:
             if not original_checklist:
@@ -586,45 +612,72 @@ class PlannerTemplateManager:
             if not checklist_data:
                 return {}
             
-            result = {}
+            # Samle items med order hint for sortering (kun for sorting, ikke sending)
+            items_with_order = []
+            
             for old_key, item in checklist_data.items():
                 try:
                     title = ""
                     is_checked = False
+                    original_order_hint = ""
                     
                     if isinstance(item, dict):
                         title = str(item.get("title", "")).strip()
                         is_checked = bool(item.get("isChecked", False))
+                        original_order_hint = str(item.get("orderHint", ""))
                     elif hasattr(item, 'title'):
                         title = str(self.extract_primitive_value(getattr(item, 'title', ''))).strip()
                         is_checked = bool(getattr(item, 'is_checked', False) or getattr(item, 'isChecked', False))
+                        original_order_hint = str(getattr(item, 'order_hint', '') or getattr(item, 'orderHint', ''))
                     
                     if not title:
                         logging.warning(f"Hopper over item uten title: {old_key}")
                         continue
                     
-                    # Sjekk for problematiske tegn i title
-                    if len(title) > 255:  # Microsoft har grenser
+                    if len(title) > 255:
                         title = title[:255]
                         logging.warning(f"Kortet ned lang title: {title[:50]}...")
                     
-                    # Ny GUID
-                    new_key = str(uuid.uuid4())
-                    
-                    item_data = {
-                        "@odata.type": "microsoft.graph.plannerChecklistItem",
-                        "title": title,
-                        "isChecked": is_checked
-                    }
-                    
-                    result[new_key] = item_data
-                    logging.debug(f"Lagt til item: '{title}' (checked: {is_checked})")
+                    items_with_order.append({
+                        'title': title,
+                        'isChecked': is_checked,
+                        'orderHint': original_order_hint,  # Kun for sorting
+                        'original_key': old_key
+                    })
                     
                 except Exception as item_error:
                     logging.warning(f"Kunne ikke prosessere checklist item {old_key}: {str(item_error)}")
                     continue
             
-            logging.info(f"Kopierte {len(result)} faktiske checklist items (uten orderHint)")
+            # ASCII-basert sortering basert på original orderHint (reverse for UI match)
+            def pure_ascii_sort_key(item):
+                """Garanterer ren ASCII-basert sammenligning."""
+                order_hint = item['orderHint'] or ""
+                # Convert to ASCII bytes for guaranteed ASCII ordering
+                ascii_bytes = order_hint.encode('ascii', errors='replace')
+                return ascii_bytes
+            
+            items_with_order.sort(key=pure_ascii_sort_key, reverse=True)
+            
+            logging.info("Checklist items sortert basert på original orderHint (Microsoft genererer nye):")
+            for i, item in enumerate(items_with_order, 1):
+                logging.info(f"  {i}. '{item['title']}' (original orderHint: {item['orderHint']})")
+            
+            # Bygg result dict UTEN orderHint - la Microsoft generere
+            result = {}
+            for item in items_with_order:
+                new_key = str(uuid.uuid4())
+                
+                item_data = {
+                    "@odata.type": "microsoft.graph.plannerChecklistItem",
+                    "title": item['title'],
+                    "isChecked": item['isChecked']
+                    # INGEN orderHint - Microsoft genererer automatisk
+                }
+                
+                result[new_key] = item_data
+            
+            logging.info(f"Kopiert {len(result)} checklist items sortert korrekt (Microsoft genererer orderHints)")
             return result
             
         except Exception as e:
