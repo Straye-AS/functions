@@ -27,7 +27,7 @@ async def teamsplanner(teamsTimer: func.TimerRequest) -> None:
         logging.error(f'Error retrieving teams: {error_response}')
 
 @app.function_name(name="get_teams")
-@app.route(route="teams")
+@app.route(route="teams", auth_level=func.AuthLevel.ANONYMOUS)
 async def teams_endpoint(req: func.HttpRequest) -> func.HttpResponse:
     """Async HTTP endpoint for getting teams"""
     logging.info('Python HTTP trigger function processed a request.')
@@ -35,7 +35,7 @@ async def teams_endpoint(req: func.HttpRequest) -> func.HttpResponse:
     try:
         processor = TeamsProcessor()
         # Automatisk initialisering ved første kall
-        response_data = await processor.get_teams_async()
+        response_data = "test" #await processor.get_teams_async()
         
         logging.info(f'Successfully retrieved {response_data["count"]} teams.')
         
