@@ -7,6 +7,7 @@ import aiohttp
 from azure.identity import ClientSecretCredential
 from msgraph import GraphServiceClient
 from msgraph.generated.models.planner_plan import PlannerPlan
+from msgraph.generated.models.planner_task import PlannerTask
 
 class PlannerTemplateManager:
     """
@@ -382,7 +383,7 @@ class PlannerTemplateManager:
             logging.error(f"Feil ved opprettelse av plan: {str(e)}")
             return None
     
-    async def create_task_copy(self, template_task, new_plan_id: str, new_bucket_id: str) -> Optional:
+    async def create_task_copy(self, template_task, new_plan_id: str, new_bucket_id: str) -> Optional[PlannerTask]:
         """
         Oppretter en ny task som kopi av mal-task.
         Lar Microsoft generere nye orderHints automatisk.
