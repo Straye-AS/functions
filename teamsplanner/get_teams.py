@@ -154,7 +154,6 @@ class TeamsProcessor:
             'displayName': team.display_name,
             'visibility': team.visibility,
             'isProcessed': planner_result,
-            #'plannerId': planner_result.get('planId') if planner_result else None
         }
     
     async def get_teams_async(self) -> Dict:
@@ -176,6 +175,9 @@ class TeamsProcessor:
             while teams_response:
                 if teams_response.value:
                     for team in teams_response.value:
+                        # TODO: Remove for production
+                        if "test" not in team.display_name:
+                            continue
                         team_data = await self.process_team(team)
                         if team_data:
                             new_teams_list.append(team_data)
@@ -235,6 +237,7 @@ class TeamsProcessor:
         except Exception as e:
             logging.error(f"Feil ved markering av team som prosessert: {str(e)}")
             raise Exception(f"Feil ved markering av team som prosessert: {str(e)}")
+        
     
     def is_team_processed(self, team_id: str) -> bool:
         """

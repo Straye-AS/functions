@@ -8,7 +8,6 @@ from azure.identity import ClientSecretCredential
 from msgraph import GraphServiceClient
 from msgraph.generated.models.planner_plan import PlannerPlan
 
-
 class PlannerTemplateManager:
     """
     Klasse for å håndtere kopiering av Planner-templates til nye teams.
@@ -28,9 +27,9 @@ class PlannerTemplateManager:
         self._access_token: Optional[str] = None
         
         # Timing konfigurasjon
-        self.bucket_delay = 2  # Sekunder mellom bucket-opprettelser
-        self.task_delay = 2   # Sekunder mellom task-opprettelser
-        self.details_delay = 1 # Sekunder mellom details-oppdateringer
+        self.bucket_delay = 0.1  # Sekunder mellom bucket-opprettelser
+        self.task_delay = 0.1   # Sekunder mellom task-opprettelser
+        self.details_delay = 0.1 # Sekunder mellom details-oppdateringer
         
         # Validering
         self._validate_configuration()
@@ -116,13 +115,23 @@ class PlannerTemplateManager:
                 logging.error("Kopiering av template feilet")
                 return None
             
+            # Legg til Planner tab i General kanal
+            tab_success = await self.add_planner_tab_to_team(team_id, created_plan.id, created_plan.title)
+            if  tab_success:
+                logging.info(f"Planner tab lagt til i Generelt kanal for team {team_id}")
+            else:
+                logging.error(f"Kunne ikke legge til Planner tab i Generelt kanal for team {team_id}")
+        
+            
             logging.info(f"Kopiering av mal fullført! Ny plan ID: {created_plan.id}")
+
             
             return {
                 "id": created_plan.id,
                 "title": created_plan.title,
                 "owner": created_plan.owner,
-                "created_date_time": created_plan.created_date_time
+                "created_date_time": created_plan.created_date_time,
+                "tab_added": tab_success
             }
             
         except Exception as e:
@@ -434,7 +443,7 @@ class PlannerTemplateManager:
                 copied_checklist = self.copy_checklist_from_sdk(template_details.checklist)
                 if copied_checklist:
                     logging.info(f"    Kopierer {len(copied_checklist)} checklist items for task: {task_title}")
-                    patch_data = {'checklist': copied_checklist}
+                    patch_data = {'checklist': copied_checklist, 'previewType': 'checklist'}
                     
                     # Log første checklist item for debugging
                     first_key = next(iter(copied_checklist), None)
@@ -786,22 +795,83 @@ class PlannerTemplateManager:
         except Exception as e:
             logging.error(f"Feil ved henting av ETag: {str(e)}")
             return ""
-
-    def clear_template_cache(self) -> None:
-        """Tømmer template cache (nyttig for testing eller refresh)."""
-        self._template_plan = None
-        logging.info("Template cache tømt")
-    
-    def set_timing_config(self, bucket_delay: int = 2, task_delay: int = 2, details_delay: int = 1) -> None:
+        
+    async def add_planner_tab_to_team(self, team_id: str, plan_id: str, plan_title: str, channel_id: str = None) -> bool:
         """
-        Setter timing-konfigurasjon for å unngå throttling.
+        Legger til Planner tab med manuell HTTP request.
+        """
+        try:
+            # If no channel_id provided, get the General channel
+            if not channel_id:
+                channel_id = await self.get_general_channel_id(team_id)
+                if not channel_id:
+                    logging.error("Kunne ikke finne General kanal")
+                    return False
+
+            tenant_id = os.getenv("AZURE_TENANT_ID")
+            
+            if not tenant_id:
+                logging.error("Kunne ikke hente tenant ID")
+                return False
+
+            # Get access token from your graph client
+            # This depends on how your graph client is set up
+            
+            url = f"https://graph.microsoft.com/v1.0/teams/{team_id}/channels/{channel_id}/tabs"
+            
+            headers = {
+                "Authorization": f"Bearer {self._access_token}",
+                "Content-Type": "application/json"
+            }
+            
+            request_body = {
+                "displayName": plan_title,
+                "teamsApp@odata.bind": "https://graph.microsoft.com/v1.0/appCatalogs/teamsApps/com.microsoft.teamspace.tab.planner",
+                "configuration": {
+                    "entityId": plan_id,
+                    "contentUrl": f"https://tasks.office.com/{tenant_id}/Home/PlannerFrame?page=7&planId={plan_id}",
+                    "websiteUrl": f"https://tasks.office.com/{tenant_id}/Home/PlanViews/{plan_id}"
+                }
+            }
+            
+            async with aiohttp.ClientSession() as session:
+                async with session.post(url, headers=headers, json=request_body) as response:
+                    if response.status == 201:
+                        result = await response.json()
+                        logging.info(f"Planner tab '{result['displayName']}' lagt til med ID: {result['id']}")
+                        return True
+                    else:
+                        error_text = await response.text()
+                        logging.error(f"HTTP {response.status}: {error_text}")
+                        return False
+                        
+        except Exception as e:
+            logging.error(f"Feil ved tillegging av Planner tab: {str(e)}")
+            return False
+
+
+    async def get_general_channel_id(self, team_id: str) -> str:
+        """
+        Henter ID til General kanalen i et team.
         
         Args:
-            bucket_delay: Sekunder mellom bucket-opprettelser
-            task_delay: Sekunder mellom task-opprettelser
-            details_delay: Sekunder mellom details-oppdateringer
+            team_id: ID til teamet
+            
+        Returns:
+            str: Channel ID eller tom string hvis ikke funnet
         """
-        self.bucket_delay = bucket_delay
-        self.task_delay = task_delay
-        self.details_delay = details_delay
-        logging.info(f"Timing satt til: bucket_delay={bucket_delay}s, task_delay={task_delay}s, details_delay={details_delay}s")
+        try:
+            channels = await self.graph_client.teams.by_team_id(team_id).channels.get()
+            
+            if channels and channels.value:
+                for channel in channels.value:
+                    # Generelt kanal har spesielle egenskaper
+                    if channel.display_name == "Generelt" or channel.membership_type == "standard":
+                        return channel.id
+            
+            logging.warning(f"General kanal ikke funnet for team {team_id}")
+            return ""
+            
+        except Exception as e:
+            logging.error(f"Feil ved henting av General kanal: {str(e)}")
+            return ""
