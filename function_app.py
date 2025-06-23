@@ -33,11 +33,12 @@ async def teams_endpoint(req: func.HttpRequest) -> func.HttpResponse:
     logging.info('Python HTTP trigger function processed a request.')
     
     try:
-        processor = TeamsProcessor()
-        # Automatisk initialisering ved første kall
-        response_data = "test" #await processor.get_teams_async()
+        response_data = {
+            "message": "Successfully called HTTP endpoint!",
+            "status": "success"
+        }
         
-        logging.info(f'Successfully retrieved {len(response_data)} teams.')
+        logging.info(f'Successfully called teamsplanner!')
         
         return func.HttpResponse(
             body=json.dumps(response_data),

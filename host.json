@@ -3,10 +3,21 @@
   "logging": {
     "applicationInsights": {
       "samplingSettings": {
-        "isEnabled": true,
-        "excludedTypes": "Request"
+        "isEnabled": false
       }
-    }
+    },
+    "logLevel": {
+      "default": "Debug",
+      "Host.Results": "Debug",
+      "Function": "Debug", 
+      "Host.Aggregator": "Debug",
+      "Microsoft": "Information",
+      "System": "Information"
+    },
+    "console": {
+      "isEnabled": true
+    },
+    "fileLoggingMode": "always"
   },
   "extensionBundle": {
     "id": "Microsoft.Azure.Functions.ExtensionBundle",
