@@ -7,10 +7,10 @@
       }
     },
     "logLevel": {
-      "default": "Debug",
-      "Host.Results": "Debug",
-      "Function": "Debug", 
-      "Host.Aggregator": "Debug",
+      "default": "Information",
+      "Host.Results": "Information",
+      "Function": "Information", 
+      "Host.Aggregator": "Information",
       "Microsoft": "Information",
       "System": "Information"
     },
