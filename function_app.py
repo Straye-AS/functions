@@ -7,7 +7,7 @@ app = func.FunctionApp()
 
 
 @app.timer_trigger(
-    schedule="0 */5 * * * *",
+    schedule="0 */15 * * * *",  # Every 15 minutes
     arg_name="teamsTimer",
     run_on_startup=False,
     use_monitor=False,
