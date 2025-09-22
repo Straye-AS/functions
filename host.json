@@ -3,24 +3,19 @@
   "logging": {
     "applicationInsights": {
       "samplingSettings": {
-        "isEnabled": false
+        "isEnabled": true
       }
     },
     "logLevel": {
       "default": "Information",
       "Host.Results": "Information",
-      "Function": "Information", 
-      "Host.Aggregator": "Information",
-      "Microsoft": "Information",
-      "System": "Information"
-    },
-    "console": {
-      "isEnabled": true
-    },
-    "fileLoggingMode": "always"
+      "Function": "Information",
+      "Host.Aggregator": "Information"
+    }
   },
   "extensionBundle": {
     "id": "Microsoft.Azure.Functions.ExtensionBundle",
     "version": "[4.*, 5.0.0)"
-  }
+  },
+  "functionTimeout": "00:05:00"
 }

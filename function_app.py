@@ -29,9 +29,8 @@ async def teamsplanner(teamsTimer: func.TimerRequest) -> None:
         logging.error(f"Error retrieving teams: {error_response}")
 
 
-@app.function_name(name="get_teams")
 @app.route(route="teams", auth_level=func.AuthLevel.ANONYMOUS)
-async def teams_endpoint(req: func.HttpRequest) -> func.HttpResponse:
+async def get_teams(req: func.HttpRequest) -> func.HttpResponse:
     """Async HTTP endpoint for getting teams"""
     logging.info("Python HTTP trigger function processed a request.")
 
