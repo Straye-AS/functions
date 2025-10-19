@@ -7,9 +7,9 @@ app = func.FunctionApp()
 
 
 @app.timer_trigger(
-    schedule="0 */15 * * * *",  # Every 15 minutes
+    schedule="0 */30 * * * *",  # every 30 minutes
     arg_name="teamsTimer",
-    run_on_startup=False,
+    run_on_startup=True,
     use_monitor=False,
 )
 async def teamsplanner(teamsTimer: func.TimerRequest) -> None:
