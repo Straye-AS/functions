@@ -26,6 +26,17 @@ class PlannerTemplateManager:
         # Konfigurasjon
         self.template_planner_id = os.getenv("TEAMS_PLANNER_TEMPLATE_ID")
 
+        # Medlemskonfigurasjon - lett å endre her!
+        self.team_owners = ["hauk@straye.no", "robot@straye.no"]  # Eiere i teamet
+        self.team_members = ["andreas@straye.no"]  # Vanlige medlemmer i teamet
+        self.admin_channel_owners = [
+            "hauk@straye.no",
+            "robot@straye.no",
+        ]  # Eiere i admin kanal
+        self.admin_channel_members = [
+            "andreas@straye.no"
+        ]  # Vanlige medlemmer i admin kanal
+
         # Cache
         self._template_plan: Optional[PlannerPlan] = None
         self._access_token: Optional[str] = None
@@ -114,6 +125,11 @@ class PlannerTemplateManager:
                 logging.info(f"Team {team_id} har allerede planner")
                 return True
 
+            # Sikre at alle nødvendige brukere er medlemmer av teamet
+            logging.info("Sikrer at alle nødvendige brukere er medlemmer av teamet...")
+            for email in self.team_members:
+                await self.ensure_user_in_team(team_id, email)
+
             # Opprett de to nye kanalene før planner-opprettelse
             logging.info("Oppretter nye kanaler for teamet...")
             admin_channel_id = await self.create_channel(
@@ -136,6 +152,14 @@ class PlannerTemplateManager:
             logging.info(
                 f"Kanaler opprettet - Admin: {admin_channel_id}, Montasje: {montasje_channel_id}"
             )
+
+            # Legg til medlemmer i admin kanal
+            if admin_channel_id:
+                logging.info("Legger til medlemmer i Administrasjon kanal...")
+                for email in self.admin_channel_members:
+                    await self.add_member_to_channel(
+                        team_id, admin_channel_id, email, is_owner=False
+                    )
 
             # Wait for channels to be fully created before adding planner
             logging.info(
@@ -1828,6 +1852,63 @@ class PlannerTemplateManager:
             logging.error(f"Feil ved å sikre bruker i team: {str(e)}")
             return False
 
+    async def add_member_to_channel(
+        self, team_id: str, channel_id: str, user_email: str, is_owner: bool = False
+    ) -> bool:
+        """
+        Legger til et medlem i en kanal.
+
+        Args:
+            team_id: ID til teamet
+            channel_id: ID til kanalen
+            user_email: E-postadresse til brukeren
+            is_owner: Om brukeren skal være owner (True) eller bare medlem (False)
+
+        Returns:
+            bool: True hvis vellykket, False ved feil
+        """
+        try:
+            if not self._access_token:
+                self.get_access_token()
+                if not self._access_token:
+                    logging.error("Kunne ikke hente access token")
+                    return False
+
+            url = f"https://graph.microsoft.com/v1.0/teams/{team_id}/channels/{channel_id}/members"
+            headers = {
+                "Authorization": f"Bearer {self._access_token}",
+                "Content-Type": "application/json",
+            }
+
+            roles = ["owner"] if is_owner else ["member"]
+            request_body = {
+                "@odata.type": "#microsoft.graph.aadUserConversationMember",
+                "roles": roles,
+                "user@odata.bind": f"https://graph.microsoft.com/v1.0/users('{user_email}')",
+            }
+
+            logging.info(
+                f"Legger til {user_email} som {'owner' if is_owner else 'member'} i kanal {channel_id}"
+            )
+
+            async with aiohttp.ClientSession() as session:
+                async with session.post(
+                    url, headers=headers, json=request_body
+                ) as response:
+                    if response.status in [201, 204]:
+                        logging.info(f"Bruker {user_email} lagt til kanal")
+                        return True
+                    else:
+                        error_text = await response.text()
+                        logging.error(
+                            f"Kunne ikke legge til {user_email} til kanal: HTTP {response.status} - {error_text}"
+                        )
+                        return False
+
+        except Exception as e:
+            logging.error(f"Feil ved å legge til medlem i kanal: {str(e)}")
+            return False
+
     async def create_channel(
         self,
         team_id: str,
@@ -1855,12 +1936,11 @@ class PlannerTemplateManager:
                     return None
 
             # For private kanaler, sørg for at nødvendige brukere er medlemmer
-            owner_emails = ["hauk@straye.no", "robot@straye.no"]
             if is_private:
                 logging.info(
                     f"Sikrer at eierne er medlemmer av teamet for privat kanal"
                 )
-                for email in owner_emails:
+                for email in self.admin_channel_owners:
                     await self.ensure_user_in_team(team_id, email)
                 # Vent litt for at medlemskap skal bli aktivert
                 await asyncio.sleep(2)
@@ -1891,7 +1971,7 @@ class PlannerTemplateManager:
                         "roles": ["owner"],
                         "user@odata.bind": f"https://graph.microsoft.com/v1.0/users('{email}')",
                     }
-                    for email in owner_emails
+                    for email in self.admin_channel_owners
                 ]
 
             logging.info(f"Oppretter kanal: {channel_name} (type: {membership_type})")
