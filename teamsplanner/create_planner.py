@@ -123,7 +123,7 @@ class PlannerTemplateManager:
             return None
 
     async def create_planner_for_team(
-        self, team_id: str, team_name: str
+        self, team_id: str, team_name: str, visibility: str = None
     ) -> Optional[Dict]:
         """
         Oppretter en ny planner for et team ved å kopiere eksisterende mal.
@@ -132,6 +132,7 @@ class PlannerTemplateManager:
         Args:
             team_id: ID til teamet som skal få en ny planner
             team_name: Navn på teamet
+            visibility: Visibility av teamet ("private" eller "public")
 
         Returns:
             Optional[Dict]: Informasjon om den nye planneren hvis vellykket, None ved feil
@@ -140,6 +141,13 @@ class PlannerTemplateManager:
             # Log current mode
             mode_msg = "🧪 TESTING MODE" if self.testing_mode else "🚀 PRODUCTION MODE"
             logging.info(f"{mode_msg} - Processing team: {team_name}")
+
+            # SKIP PUBLIC TEAMS: Public teams trenger ikke planner og spesialkanaler
+            if visibility and visibility.lower() == "public":
+                logging.info(
+                    f"⏭️  SKIPPING team '{team_name}' - team is PUBLIC, only processing PRIVATE teams"
+                )
+                return True  # Returner True for å markere som prosessert
 
             # Hent mal-planner
             template_plan = await self.get_template_planner()
@@ -179,15 +187,15 @@ class PlannerTemplateManager:
             else:
                 logging.info("Testing mode: Hopper over ekstra team medlemmer")
 
-            # Opprett de to nye kanalene før planner-opprettelse
-            logging.info("Oppretter nye kanaler for teamet...")
-            admin_channel_id = await self.create_channel(
+            # Opprett de to nye kanalene før planner-opprettelse (eller finn eksisterende)
+            logging.info("Sikrer at Administrasjon og Montasje kanaler eksisterer...")
+            admin_channel_id = await self.get_or_create_channel(
                 team_id,
                 "Administrasjon 🔑",
                 "For administrasjon og planlegging",
                 is_private=True,
             )
-            montasje_channel_id = await self.create_channel(
+            montasje_channel_id = await self.get_or_create_channel(
                 team_id,
                 "Montasje 🏗️",
                 "For montasje og utførelse",
@@ -2046,10 +2054,12 @@ class PlannerTemplateManager:
                         result = await response.json()
                         members = result.get("value", [])
                         for member in members:
+                            member_email = member.get("email") or member.get(
+                                "userPrincipalName"
+                            )
                             if (
-                                member.get("email", "").lower() == user_email.lower()
-                                or member.get("userPrincipalName", "").lower()
-                                == user_email.lower()
+                                member_email
+                                and member_email.lower() == user_email.lower()
                             ):
                                 existing_member_id = member.get("id")
                                 member_roles = member.get("roles", [])
@@ -2176,6 +2186,66 @@ class PlannerTemplateManager:
         except Exception as e:
             logging.error(f"Feil ved å legge til medlem i kanal: {str(e)}")
             return False
+
+    async def get_or_create_channel(
+        self,
+        team_id: str,
+        channel_name: str,
+        description: str,
+        is_private: bool = False,
+        membership_type: Optional[str] = None,
+    ) -> Optional[str]:
+        """
+        Sjekker om en kanal eksisterer, og oppretter den hvis den ikke finnes.
+
+        Args:
+            team_id: ID til teamet
+            channel_name: Navn på kanalen
+            description: Beskrivelse av kanalen
+            is_private: Om kanalen skal være privat (True) eller standard (False)
+            membership_type: Membership type: "standard", "private", eller "shared"
+
+        Returns:
+            Optional[str]: Channel ID hvis vellykket, None ved feil
+        """
+        try:
+            # Først, sjekk om kanalen allerede eksisterer
+            if not self._access_token:
+                self.get_access_token()
+                if not self._access_token:
+                    logging.error("Kunne ikke hente access token")
+                    return None
+
+            url = f"https://graph.microsoft.com/v1.0/teams/{team_id}/channels"
+            headers = {
+                "Authorization": f"Bearer {self._access_token}",
+                "Content-Type": "application/json",
+            }
+
+            async with aiohttp.ClientSession() as session:
+                async with session.get(url, headers=headers) as response:
+                    if response.status == 200:
+                        result = await response.json()
+                        channels = result.get("value", [])
+                        for channel in channels:
+                            if channel.get("displayName") == channel_name:
+                                channel_id = channel.get("id")
+                                logging.info(
+                                    f"Kanal '{channel_name}' eksisterer allerede med ID: {channel_id}"
+                                )
+                                return channel_id
+
+            # Kanalen eksisterer ikke, opprett den
+            logging.info(f"Kanal '{channel_name}' eksisterer ikke, oppretter ny...")
+            return await self.create_channel(
+                team_id, channel_name, description, is_private, membership_type
+            )
+
+        except Exception as e:
+            logging.error(
+                f"Feil ved get_or_create_channel for '{channel_name}': {str(e)}"
+            )
+            return None
 
     async def _wait_for_channel_creation(
         self, team_id: str, channel_name: str, max_wait_seconds: int = 60
