@@ -26,16 +26,19 @@ class PlannerTemplateManager:
         # Konfigurasjon
         self.template_planner_id = os.getenv("TEAMS_PLANNER_TEMPLATE_ID")
 
+        # Testing mode - sett til True for å kun prosessere "Testing" teams og kun legge til utviklere
+        self.testing_mode = os.getenv("TESTING_MODE", "false").lower() == "true"
+
         # Medlemskonfigurasjon - lett å endre her!
-        self.team_owners = ["hauk@straye.no", "robot@straye.no"]  # Eiere i teamet
-        self.team_members = ["andreas@straye.no"]  # Vanlige medlemmer i teamet
-        self.admin_channel_owners = [
-            "hauk@straye.no",
-            "robot@straye.no",
-        ]  # Eiere i admin kanal
-        self.admin_channel_members = [
-            "andreas@straye.no"
-        ]  # Vanlige medlemmer i admin kanal
+        # Utviklere (alltid lagt til som team owners, både i testing og produksjon)
+        self.developers = ["robot@straye.no"]
+
+        # Produksjons-medlemmer (kun lagt til som team members når testing_mode = False)
+        self.production_team_members = ["andreas@straye.no"]
+        self.production_admin_channel_members = ["andreas@straye.no"]
+
+        # Admin channel owners (alltid kun utviklere)
+        self.admin_channel_owners = self.developers
 
         # Cache
         self._template_plan: Optional[PlannerPlan] = None
@@ -54,6 +57,28 @@ class PlannerTemplateManager:
         """Validerer påkrevde miljøvariabler."""
         if not self.template_planner_id:
             raise ValueError("Mangler påkrevd miljøvariabel: TEAMS_PLANNER_TEMPLATE_ID")
+
+    def get_team_members(self) -> list[str]:
+        """
+        Returnerer listen over team medlemmer basert på testing mode.
+
+        Returns:
+            list[str]: Liste med e-postadresser
+        """
+        if self.testing_mode:
+            return []  # Ingen ekstra medlemmer i testing mode
+        return self.production_team_members
+
+    def get_admin_channel_members(self) -> list[str]:
+        """
+        Returnerer listen over admin channel medlemmer basert på testing mode.
+
+        Returns:
+            list[str]: Liste med e-postadresser
+        """
+        if self.testing_mode:
+            return []  # Ingen ekstra medlemmer i testing mode
+        return self.production_admin_channel_members
 
     def get_access_token(self) -> Optional[str]:
         """
@@ -112,6 +137,10 @@ class PlannerTemplateManager:
             Optional[Dict]: Informasjon om den nye planneren hvis vellykket, None ved feil
         """
         try:
+            # Log current mode
+            mode_msg = "🧪 TESTING MODE" if self.testing_mode else "🚀 PRODUCTION MODE"
+            logging.info(f"{mode_msg} - Processing team: {team_name}")
+
             # Hent mal-planner
             template_plan = await self.get_template_planner()
             if not template_plan:
@@ -120,15 +149,35 @@ class PlannerTemplateManager:
 
             logging.info(f"Hentet mal-planner: {template_plan.title}")
 
+            # SAFETY CHECK: In testing mode, only process teams with "Testing" in the name
+            if self.testing_mode and "Testing" not in team_name:
+                logging.info(
+                    f"⏭️  SKIPPING team '{team_name}' - testing mode active and team name does not contain 'Testing'"
+                )
+                return None
+
             # Sjekk om team allerede har planner
             if await self.team_has_existing_planners(team_id):
                 logging.info(f"Team {team_id} har allerede planner")
                 return True
 
+            # Sikre at utviklere (robot) er team OWNERS for shared channels
+            logging.info(
+                f"Sikrer at {len(self.developers)} utvikler(e) er team owners..."
+            )
+            for email in self.developers:
+                await self.ensure_user_in_team(team_id, email, as_owner=True)
+
             # Sikre at alle nødvendige brukere er medlemmer av teamet
-            logging.info("Sikrer at alle nødvendige brukere er medlemmer av teamet...")
-            for email in self.team_members:
-                await self.ensure_user_in_team(team_id, email)
+            team_members = self.get_team_members()
+            if team_members:
+                logging.info(
+                    f"Sikrer at {len(team_members)} bruker(e) er medlemmer av teamet..."
+                )
+                for email in team_members:
+                    await self.ensure_user_in_team(team_id, email, as_owner=False)
+            else:
+                logging.info("Testing mode: Hopper over ekstra team medlemmer")
 
             # Opprett de to nye kanalene før planner-opprettelse
             logging.info("Oppretter nye kanaler for teamet...")
@@ -139,7 +188,10 @@ class PlannerTemplateManager:
                 is_private=True,
             )
             montasje_channel_id = await self.create_channel(
-                team_id, "Montasje 🏗️", "For montasje og utførelse", is_private=False
+                team_id,
+                "Montasje 🏗️",
+                "For montasje og utførelse",
+                membership_type="shared",
             )
 
             if not admin_channel_id:
@@ -153,13 +205,65 @@ class PlannerTemplateManager:
                 f"Kanaler opprettet - Admin: {admin_channel_id}, Montasje: {montasje_channel_id}"
             )
 
-            # Legg til medlemmer i admin kanal
-            if admin_channel_id:
-                logging.info("Legger til medlemmer i Administrasjon kanal...")
-                for email in self.admin_channel_members:
-                    await self.add_member_to_channel(
-                        team_id, admin_channel_id, email, is_owner=False
+            # Hent ALLE medlemmer i teamet med deres roller
+            logging.info(
+                "Henter alle teammedlemmer med roller for å legge dem til i nye kanaler..."
+            )
+            all_team_members = await self.get_all_team_members_with_roles(team_id)
+
+            if all_team_members:
+                logging.info(
+                    f"Fant {len(all_team_members)} medlemmer i teamet som skal legges til i kanalene"
+                )
+
+                # Legg til ALLE teammedlemmer i admin kanal med samme rolle som i teamet
+                if admin_channel_id:
+                    logging.info(
+                        "Legger til alle teammedlemmer i Administrasjon kanal med samme roller..."
                     )
+                    for member in all_team_members:
+                        member_email = member["email"]
+                        # Skip de som allerede er lagt til som channel owners ved opprettelse
+                        if member_email.lower() not in [
+                            e.lower() for e in self.admin_channel_owners
+                        ]:
+                            # Bruk samme rolle som i teamet
+                            await self.add_member_to_channel(
+                                team_id,
+                                admin_channel_id,
+                                member_email,
+                                is_owner=member["is_owner"],
+                            )
+                        else:
+                            logging.info(
+                                f"Hopper over {member_email} (allerede owner i admin kanal)"
+                            )
+
+                # Legg til ALLE teammedlemmer individuelt i montasje kanal med samme rolle
+                # (Graph API støtter ikke å legge til hele team i shared channel)
+                if montasje_channel_id:
+                    logging.info(
+                        "Legger til alle teammedlemmer individuelt i Montasje kanal med samme roller..."
+                    )
+                    for member in all_team_members:
+                        member_email = member["email"]
+                        # Skip de som allerede er lagt til som channel owners ved opprettelse
+                        if member_email.lower() not in [
+                            e.lower() for e in self.admin_channel_owners
+                        ]:
+                            # Bruk samme rolle som i teamet
+                            await self.add_member_to_channel(
+                                team_id,
+                                montasje_channel_id,
+                                member_email,
+                                is_owner=member["is_owner"],
+                            )
+                        else:
+                            logging.info(
+                                f"Hopper over {member_email} (allerede owner i montasje kanal)"
+                            )
+            else:
+                logging.warning("Ingen teammedlemmer funnet å legge til i kanalene")
 
             # Wait for channels to be fully created before adding planner
             logging.info(
@@ -1527,7 +1631,7 @@ class PlannerTemplateManager:
             }
 
             logging.info(f"📤 Sender kanal informasjon til webhook: {webhook_url}")
-            logging.debug(f"📋 Payload: {payload}")
+            logging.info(f"📋 Payload: {payload}")
 
             async with aiohttp.ClientSession() as session:
                 async with session.post(
@@ -1785,13 +1889,135 @@ class PlannerTemplateManager:
             logging.error(f"Feil ved henting av General kanal: {str(e)}")
             return ""
 
-    async def ensure_user_in_team(self, team_id: str, user_email: str) -> bool:
+    async def get_all_team_members_with_roles(self, team_id: str) -> list[dict]:
+        """
+        Henter alle medlemmer i et team med deres roller.
+
+        Args:
+            team_id: ID til teamet
+
+        Returns:
+            list[dict]: Liste med dicts {'email': str, 'is_owner': bool}
+        """
+        try:
+            if not self._access_token:
+                self.get_access_token()
+                if not self._access_token:
+                    logging.error("Kunne ikke hente access token")
+                    return []
+
+            url = f"https://graph.microsoft.com/v1.0/teams/{team_id}/members"
+            headers = {
+                "Authorization": f"Bearer {self._access_token}",
+                "Content-Type": "application/json",
+            }
+
+            async with aiohttp.ClientSession() as session:
+                async with session.get(url, headers=headers) as response:
+                    if response.status == 200:
+                        result = await response.json()
+                        members = result.get("value", [])
+
+                        # Ekstraher e-postadresser og roller
+                        member_list = []
+                        for member in members:
+                            email = member.get("email") or member.get(
+                                "userPrincipalName"
+                            )
+                            if email:
+                                roles = member.get("roles", [])
+                                is_owner = "owner" in roles
+                                member_list.append(
+                                    {"email": email, "is_owner": is_owner}
+                                )
+                                role_text = "owner" if is_owner else "member"
+                                logging.debug(f"Fant medlem: {email} ({role_text})")
+
+                        logging.info(
+                            f"Hentet {len(member_list)} medlemmer med roller fra team {team_id}"
+                        )
+                        return member_list
+                    else:
+                        error_text = await response.text()
+                        logging.error(
+                            f"Kunne ikke hente teammedlemmer: HTTP {response.status} - {error_text}"
+                        )
+                        return []
+
+        except Exception as e:
+            logging.error(f"Feil ved henting av teammedlemmer: {str(e)}")
+            return []
+
+    async def get_all_team_members(self, team_id: str) -> list[str]:
+        """
+        Henter alle medlemmer i et team (kun e-postadresser).
+
+        Args:
+            team_id: ID til teamet
+
+        Returns:
+            list[str]: Liste med e-postadresser til alle medlemmer
+        """
+        try:
+            if not self._access_token:
+                self.get_access_token()
+                if not self._access_token:
+                    logging.error("Kunne ikke hente access token")
+                    return []
+
+            url = f"https://graph.microsoft.com/v1.0/teams/{team_id}/members"
+            headers = {
+                "Authorization": f"Bearer {self._access_token}",
+                "Content-Type": "application/json",
+            }
+
+            async with aiohttp.ClientSession() as session:
+                async with session.get(url, headers=headers) as response:
+                    if response.status == 200:
+                        result = await response.json()
+                        members = result.get("value", [])
+
+                        # Ekstraher e-postadresser og roller
+                        member_list = []
+                        for member in members:
+                            email = member.get("email") or member.get(
+                                "userPrincipalName"
+                            )
+                            if email:
+                                roles = member.get("roles", [])
+                                is_owner = "owner" in roles
+                                member_list.append(
+                                    {"email": email, "is_owner": is_owner}
+                                )
+                                role_text = "owner" if is_owner else "member"
+                                logging.debug(f"Fant medlem: {email} ({role_text})")
+
+                        logging.info(
+                            f"Hentet {len(member_list)} medlemmer fra team {team_id}"
+                        )
+                        # Returner kun e-postadresser for bakoverkompatibilitet
+                        return [m["email"] for m in member_list]
+                    else:
+                        error_text = await response.text()
+                        logging.error(
+                            f"Kunne ikke hente teammedlemmer: HTTP {response.status} - {error_text}"
+                        )
+                        return []
+
+        except Exception as e:
+            logging.error(f"Feil ved henting av teammedlemmer: {str(e)}")
+            return []
+
+    async def ensure_user_in_team(
+        self, team_id: str, user_email: str, as_owner: bool = False
+    ) -> bool:
         """
         Sikrer at en bruker er medlem av teamet. Legger til hvis ikke.
 
         Args:
             team_id: ID til teamet
             user_email: E-postadresse til brukeren
+            as_owner: Om brukeren skal være owner (True) eller bare medlem (False)
 
         Returns:
             bool: True hvis brukeren er medlem (eller ble lagt til), False ved feil
@@ -1812,6 +2038,9 @@ class PlannerTemplateManager:
 
             async with aiohttp.ClientSession() as session:
                 # Sjekk eksisterende medlemmer
+                existing_member_id = None
+                is_already_owner = False
+
                 async with session.get(check_url, headers=headers) as response:
                     if response.status == 200:
                         result = await response.json()
@@ -1822,16 +2051,55 @@ class PlannerTemplateManager:
                                 or member.get("userPrincipalName", "").lower()
                                 == user_email.lower()
                             ):
-                                logging.info(
-                                    f"Bruker {user_email} er allerede medlem av teamet"
-                                )
-                                return True
+                                existing_member_id = member.get("id")
+                                member_roles = member.get("roles", [])
+                                is_already_owner = "owner" in member_roles
+
+                                if is_already_owner:
+                                    logging.info(
+                                        f"Bruker {user_email} er allerede owner av teamet"
+                                    )
+                                    return True
+                                elif not as_owner:
+                                    logging.info(
+                                        f"Bruker {user_email} er allerede medlem av teamet"
+                                    )
+                                    return True
+                                else:
+                                    logging.info(
+                                        f"Bruker {user_email} er medlem, men må oppgraderes til owner"
+                                    )
+                                    # Fall through to upgrade logic below
+                                    break
+
+                # Hvis bruker er medlem men trenger å være owner, må vi oppdatere rollen
+                if existing_member_id and as_owner and not is_already_owner:
+                    logging.info(f"Oppgraderer {user_email} til owner i teamet")
+                    update_url = f"{check_url}/{existing_member_id}"
+                    update_body = {
+                        "@odata.type": "#microsoft.graph.aadUserConversationMember",
+                        "roles": ["owner"],
+                    }
+
+                    async with session.patch(
+                        update_url, headers=headers, json=update_body
+                    ) as response:
+                        if response.status in [200, 204]:
+                            logging.info(f"Bruker {user_email} oppgradert til owner")
+                            return True
+                        else:
+                            error_text = await response.text()
+                            logging.error(
+                                f"Kunne ikke oppgradere {user_email} til owner: HTTP {response.status} - {error_text}"
+                            )
+                            return False
 
                 # Legg til bruker hvis ikke medlem
-                logging.info(f"Legger til {user_email} som medlem av teamet")
+                role = "owner" if as_owner else "member"
+                logging.info(f"Legger til {user_email} som {role} av teamet")
                 add_body = {
                     "@odata.type": "#microsoft.graph.aadUserConversationMember",
-                    "roles": ["member"],
+                    "roles": ["owner"] if as_owner else ["member"],
                     "user@odata.bind": f"https://graph.microsoft.com/v1.0/users('{user_email}')",
                 }
 
@@ -1909,12 +2177,71 @@ class PlannerTemplateManager:
             logging.error(f"Feil ved å legge til medlem i kanal: {str(e)}")
             return False
 
+    async def _wait_for_channel_creation(
+        self, team_id: str, channel_name: str, max_wait_seconds: int = 60
+    ) -> Optional[str]:
+        """
+        Venter på at en kanal skal bli opprettet (for async opprettelse med HTTP 202).
+
+        Args:
+            team_id: ID til teamet
+            channel_name: Navnet på kanalen vi venter på
+            max_wait_seconds: Maks antall sekunder å vente
+
+        Returns:
+            Optional[str]: Channel ID hvis funnet, None hvis timeout
+        """
+        if not self._access_token:
+            self.get_access_token()
+            if not self._access_token:
+                logging.error("Kunne ikke hente access token")
+                return None
+
+        url = f"https://graph.microsoft.com/v1.0/teams/{team_id}/channels"
+        headers = {
+            "Authorization": f"Bearer {self._access_token}",
+            "Content-Type": "application/json",
+        }
+
+        start_time = asyncio.get_event_loop().time()
+        check_interval = 3  # Sjekk hvert 3. sekund
+
+        async with aiohttp.ClientSession() as session:
+            while (asyncio.get_event_loop().time() - start_time) < max_wait_seconds:
+                try:
+                    async with session.get(url, headers=headers) as response:
+                        if response.status == 200:
+                            result = await response.json()
+                            channels = result.get("value", [])
+                            # Søk etter kanalen med riktig navn
+                            for channel in channels:
+                                if channel.get("displayName") == channel_name:
+                                    channel_id = channel.get("id")
+                                    logging.info(
+                                        f"Kanal '{channel_name}' funnet med ID: {channel_id}"
+                                    )
+                                    return channel_id
+
+                    # Ikke funnet ennå, vent og prøv igjen
+                    logging.info(
+                        f"Kanal '{channel_name}' ikke funnet ennå, venter {check_interval} sekunder..."
+                    )
+                    await asyncio.sleep(check_interval)
+
+                except Exception as e:
+                    logging.warning(f"Feil ved polling av kanaler: {str(e)}")
+                    await asyncio.sleep(check_interval)
+
+        # Timeout
+        return None
+
     async def create_channel(
         self,
         team_id: str,
         channel_name: str,
         description: str,
         is_private: bool = False,
+        membership_type: Optional[str] = None,
     ) -> Optional[str]:
         """
         Oppretter en ny kanal i et team.
@@ -1923,7 +2250,8 @@ class PlannerTemplateManager:
             team_id: ID til teamet
             channel_name: Navn på kanalen
             description: Beskrivelse av kanalen
-            is_private: Om kanalen skal være privat (True) eller standard (False)
+            is_private: Om kanalen skal være privat (True) eller standard (False) - legacy parameter
+            membership_type: Membership type: "standard", "private", eller "shared". Overskriver is_private.
 
         Returns:
             Optional[str]: Channel ID hvis vellykket, None ved feil
@@ -1935,24 +2263,32 @@ class PlannerTemplateManager:
                     logging.error("Kunne ikke hente access token")
                     return None
 
-            # For private kanaler, sørg for at nødvendige brukere er medlemmer
-            if is_private:
+            # Determine membership type
+            if membership_type is None:
+                membership_type = "private" if is_private else "standard"
+
+            # For private og shared kanaler, sørg for at nødvendige brukere er medlemmer
+            if membership_type in ["private", "shared"]:
                 logging.info(
-                    f"Sikrer at eierne er medlemmer av teamet for privat kanal"
+                    f"Sikrer at eierne er medlemmer av teamet for {membership_type} kanal"
                 )
                 for email in self.admin_channel_owners:
-                    await self.ensure_user_in_team(team_id, email)
-                # Vent litt for at medlemskap skal bli aktivert
-                await asyncio.sleep(2)
+                    # For shared channels, users must be team owners (not just members)
+                    as_owner = membership_type == "shared"
+                    await self.ensure_user_in_team(team_id, email, as_owner=as_owner)
+                # Vent litt for at medlemskap/owner-rolle skal bli aktivert
+                # Shared channels trenger lengre tid for at owner-rolle skal propagere
+                wait_time = 5 if membership_type == "shared" else 2
+                logging.info(
+                    f"Venter {wait_time} sekunder for at roller skal aktiveres..."
+                )
+                await asyncio.sleep(wait_time)
 
             url = f"https://graph.microsoft.com/v1.0/teams/{team_id}/channels"
             headers = {
                 "Authorization": f"Bearer {self._access_token}",
                 "Content-Type": "application/json",
             }
-
-            # Bestem membership type basert på om kanalen er privat
-            membership_type = "private" if is_private else "standard"
 
             request_body = {
                 "displayName": channel_name,
@@ -1963,8 +2299,9 @@ class PlannerTemplateManager:
                 },
             }
 
-            # For private kanaler, legg til members med owner rolle
-            if is_private:
+            # For private og shared kanaler, legg til members med owner rolle
+            # Shared channels krever minst én owner ved opprettelse
+            if membership_type in ["private", "shared"]:
                 request_body["members"] = [
                     {
                         "@odata.type": "#microsoft.graph.aadUserConversationMember",
@@ -1987,6 +2324,25 @@ class PlannerTemplateManager:
                             f"Kanal '{channel_name}' opprettet med ID: {channel_id}"
                         )
                         return channel_id
+                    elif response.status == 202:
+                        # Shared channels returnerer 202 (Accepted) - kanalen blir opprettet asynkront
+                        logging.info(
+                            f"Kanal '{channel_name}' (shared) akseptert for opprettelse (HTTP 202). Venter på at den blir klar..."
+                        )
+                        # Vi må polle for å finne kanalen når den er opprettet
+                        channel_id = await self._wait_for_channel_creation(
+                            team_id, channel_name, max_wait_seconds=60
+                        )
+                        if channel_id:
+                            logging.info(
+                                f"Kanal '{channel_name}' ferdig opprettet med ID: {channel_id}"
+                            )
+                            return channel_id
+                        else:
+                            logging.error(
+                                f"Timeout: Kanal '{channel_name}' ble ikke ferdig opprettet innen 60 sekunder"
+                            )
+                            return None
                     else:
                         error_text = await response.text()
                         logging.error(
