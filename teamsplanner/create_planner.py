@@ -127,7 +127,7 @@ class PlannerTemplateManager:
     ) -> Optional[Dict]:
         """
         Oppretter en ny planner for et team ved å kopiere eksisterende mal.
-        Ny algoritme: fullfører hver bucket komplett før neste.
+        Idempotent: Sjekker hvert komponent individuelt og oppretter kun det som mangler.
 
         Args:
             team_id: ID til teamet som skal få en ny planner
@@ -164,11 +164,6 @@ class PlannerTemplateManager:
                 )
                 return None
 
-            # Sjekk om team allerede har planner
-            if await self.team_has_existing_planners(team_id):
-                logging.info(f"Team {team_id} har allerede planner")
-                return True
-
             # Sikre at utviklere (robot) er team OWNERS for shared channels
             logging.info(
                 f"Sikrer at {len(self.developers)} utvikler(e) er team owners..."
@@ -187,137 +182,173 @@ class PlannerTemplateManager:
             else:
                 logging.info("Testing mode: Hopper over ekstra team medlemmer")
 
-            # Opprett de to nye kanalene før planner-opprettelse (eller finn eksisterende)
-            logging.info("Sikrer at Administrasjon og Montasje kanaler eksisterer...")
-            admin_channel_id = await self.get_or_create_channel(
+            # STEP 1: Check if planner exists, if not create it
+            logging.info("📋 Sjekker om team har planner...")
+            planner_exists = await self.team_has_existing_planners(team_id)
+            created_plan = None
+
+            if planner_exists:
+                logging.info(
+                    f"✅ Team {team_id} har allerede planner, hopper over opprettelse"
+                )
+                # Get existing planner ID for notification later
+                try:
+                    existing_plans = await self.graph_client.groups.by_group_id(
+                        team_id
+                    ).planner.plans.get()
+                    if existing_plans and existing_plans.value:
+                        created_plan = existing_plans.value[0]
+                        logging.info(
+                            f"Hentet eksisterende planner: {created_plan.title}"
+                        )
+                except Exception as e:
+                    logging.warning(
+                        f"Kunne ikke hente eksisterende planner detaljer: {str(e)}"
+                    )
+                    # This is OK - we just won't have plan details for the notification
+            else:
+                logging.info("🚀 Oppretter ny planner...")
+                # Opprett ny plan
+                created_plan = await self.create_new_plan(
+                    template_plan, team_id, team_name
+                )
+                if not created_plan:
+                    logging.error("Kunne ikke opprette planner")
+                    return None
+
+                # Kopier buckets og tasks sekvensielt
+                success = await self.copy_template_sequentially(
+                    template_plan.id, created_plan.id
+                )
+                if not success:
+                    logging.error("Kopiering av template feilet")
+                    return None
+
+                # Wait a bit for the planner to be fully created and accessible
+                logging.info(
+                    "Venter 3 sekunder for at planner skal bli fullstendig tilgjengelig..."
+                )
+                await asyncio.sleep(3)
+
+                # Legg til Planner tab i General kanal
+                tab_success = await self.add_planner_tab_to_team(
+                    team_id,
+                    created_plan.id,
+                    created_plan.title,
+                )
+                if tab_success:
+                    logging.info(
+                        f"✅ Planner tab lagt til i General kanal for team {team_id}"
+                    )
+                else:
+                    logging.error(
+                        f"❌ Kunne ikke legge til Planner tab i General kanal for team {team_id}"
+                    )
+
+            # STEP 2: Check and create admin channel if needed
+            logging.info("🔑 Sjekker Administrasjon kanal...")
+            admin_result = await self.get_or_create_channel(
                 team_id,
                 "Administrasjon 🔑",
                 "For administrasjon og planlegging",
                 is_private=True,
             )
-            montasje_channel_id = await self.get_or_create_channel(
+
+            if not admin_result:
+                logging.error("❌ Kunne ikke opprette Administrasjon kanal")
+                return None
+
+            admin_channel_id, admin_was_created = admin_result
+            logging.info(
+                f"{'✨ Opprettet' if admin_was_created else '✅ Fant eksisterende'} Administrasjon kanal: {admin_channel_id}"
+            )
+
+            # STEP 3: Check and create montasje channel if needed
+            logging.info("🏗️ Sjekker Montasje kanal...")
+            montasje_result = await self.get_or_create_channel(
                 team_id,
                 "Montasje 🏗️",
                 "For montasje og utførelse",
                 membership_type="shared",
             )
 
-            if not admin_channel_id:
-                logging.error("Kunne ikke opprette Administrasjon kanal")
-                return None
-
-            if not montasje_channel_id:
-                logging.warning("Kunne ikke opprette Montasje kanal, men fortsetter")
-
-            logging.info(
-                f"Kanaler opprettet - Admin: {admin_channel_id}, Montasje: {montasje_channel_id}"
-            )
-
-            # Hent ALLE medlemmer i teamet med deres roller
-            logging.info(
-                "Henter alle teammedlemmer med roller for å legge dem til i nye kanaler..."
-            )
-            all_team_members = await self.get_all_team_members_with_roles(team_id)
-
-            if all_team_members:
+            montasje_channel_id = None
+            montasje_was_created = False
+            if montasje_result:
+                montasje_channel_id, montasje_was_created = montasje_result
                 logging.info(
-                    f"Fant {len(all_team_members)} medlemmer i teamet som skal legges til i kanalene"
+                    f"{'✨ Opprettet' if montasje_was_created else '✅ Fant eksisterende'} Montasje kanal: {montasje_channel_id}"
+                )
+            else:
+                logging.warning("⚠️ Kunne ikke opprette Montasje kanal, men fortsetter")
+
+            # Track if we need to add members and send welcome messages (only if any channel was created)
+            channels_were_created = admin_was_created or montasje_was_created
+
+            # STEP 4: Add members to newly created channels only
+            if channels_were_created:
+                logging.info("👥 Legger til medlemmer i nyopprettede kanaler...")
+
+                # Wait for channels to be fully created
+                logging.info(
+                    "Venter 5 sekunder for at kanalene skal bli fullstendig opprettet..."
+                )
+                await asyncio.sleep(5)
+
+                # Hent ALLE medlemmer i teamet med deres roller
+                all_team_members = await self.get_all_team_members_with_roles(team_id)
+
+                if all_team_members:
+                    logging.info(
+                        f"Fant {len(all_team_members)} medlemmer i teamet som skal legges til i kanalene"
+                    )
+
+                    # Legg til medlemmer i admin kanal hvis den ble opprettet
+                    if admin_was_created and admin_channel_id:
+                        logging.info(
+                            "Legger til alle teammedlemmer i Administrasjon kanal med samme roller..."
+                        )
+                        for member in all_team_members:
+                            member_email = member["email"]
+                            # Skip de som allerede er lagt til som channel owners ved opprettelse
+                            if member_email.lower() not in [
+                                e.lower() for e in self.admin_channel_owners
+                            ]:
+                                # Bruk samme rolle som i teamet
+                                await self.add_member_to_channel(
+                                    team_id,
+                                    admin_channel_id,
+                                    member_email,
+                                    is_owner=member["is_owner"],
+                                )
+
+                    # Legg til medlemmer i montasje kanal hvis den ble opprettet
+                    if montasje_was_created and montasje_channel_id:
+                        logging.info(
+                            "Legger til alle teammedlemmer individuelt i Montasje kanal med samme roller..."
+                        )
+                        for member in all_team_members:
+                            member_email = member["email"]
+                            # Skip de som allerede er lagt til som channel owners ved opprettelse
+                            if member_email.lower() not in [
+                                e.lower() for e in self.admin_channel_owners
+                            ]:
+                                # Bruk samme rolle som i teamet
+                                await self.add_member_to_channel(
+                                    team_id,
+                                    montasje_channel_id,
+                                    member_email,
+                                    is_owner=member["is_owner"],
+                                )
+                else:
+                    logging.warning("Ingen teammedlemmer funnet å legge til i kanalene")
+            else:
+                logging.info(
+                    "✅ Kanaler eksisterte allerede, hopper over medlemsopprettelse"
                 )
 
-                # Legg til ALLE teammedlemmer i admin kanal med samme rolle som i teamet
-                if admin_channel_id:
-                    logging.info(
-                        "Legger til alle teammedlemmer i Administrasjon kanal med samme roller..."
-                    )
-                    for member in all_team_members:
-                        member_email = member["email"]
-                        # Skip de som allerede er lagt til som channel owners ved opprettelse
-                        if member_email.lower() not in [
-                            e.lower() for e in self.admin_channel_owners
-                        ]:
-                            # Bruk samme rolle som i teamet
-                            await self.add_member_to_channel(
-                                team_id,
-                                admin_channel_id,
-                                member_email,
-                                is_owner=member["is_owner"],
-                            )
-                        else:
-                            logging.info(
-                                f"Hopper over {member_email} (allerede owner i admin kanal)"
-                            )
-
-                # Legg til ALLE teammedlemmer individuelt i montasje kanal med samme rolle
-                # (Graph API støtter ikke å legge til hele team i shared channel)
-                if montasje_channel_id:
-                    logging.info(
-                        "Legger til alle teammedlemmer individuelt i Montasje kanal med samme roller..."
-                    )
-                    for member in all_team_members:
-                        member_email = member["email"]
-                        # Skip de som allerede er lagt til som channel owners ved opprettelse
-                        if member_email.lower() not in [
-                            e.lower() for e in self.admin_channel_owners
-                        ]:
-                            # Bruk samme rolle som i teamet
-                            await self.add_member_to_channel(
-                                team_id,
-                                montasje_channel_id,
-                                member_email,
-                                is_owner=member["is_owner"],
-                            )
-                        else:
-                            logging.info(
-                                f"Hopper over {member_email} (allerede owner i montasje kanal)"
-                            )
-            else:
-                logging.warning("Ingen teammedlemmer funnet å legge til i kanalene")
-
-            # Wait for channels to be fully created before adding planner
-            logging.info(
-                "Venter 5 sekunder for at kanalene skal bli fullstendig opprettet..."
-            )
-            await asyncio.sleep(5)
-
-            # OPPRETT PLANNER FØRST (i General kanal)
-            logging.info("🚀 Oppretter planner først i General kanal...")
-
-            # Opprett ny plan
-            created_plan = await self.create_new_plan(template_plan, team_id, team_name)
-            if not created_plan:
-                return None
-
-            # Kopier buckets og tasks sekvensielt (ny algoritme)
-            success = await self.copy_template_sequentially(
-                template_plan.id, created_plan.id
-            )
-            if not success:
-                logging.error("Kopiering av template feilet")
-                return None
-
-            # Wait a bit for the planner to be fully created and accessible
-            logging.info(
-                "Venter 3 sekunder for at planner skal bli fullstendig tilgjengelig..."
-            )
-            await asyncio.sleep(3)
-
-            # Legg til Planner tab i General kanal (Microsoft Teams tillater ikke Planner i private kanaler)
-            tab_success = await self.add_planner_tab_to_team(
-                team_id,
-                created_plan.id,
-                created_plan.title,
-                # channel_id=admin_channel_id,  # Bruker General kanal - Planner kan ikke legges til i private kanaler
-            )
-            if tab_success:
-                logging.info(f"Planner tab lagt til i General kanal for team {team_id}")
-            else:
-                logging.error(
-                    f"Kunne ikke legge til Planner tab i General kanal for team {team_id}"
-                )
-
-            # Legg til SharePoint tab "Prosjektfiler 🗃️" i Administrasjon kanal
-            # Private kanaler tar tid å være klare for SharePoint (2-7 minutter)
-            if admin_channel_id:
+            # STEP 5: Add SharePoint tab to admin channel (only if it was just created)
+            if admin_was_created and admin_channel_id:
                 logging.info(
                     "⏳ Venter 2 minutter for at private kanal skal være klar for SharePoint..."
                 )
@@ -354,25 +385,33 @@ class PlannerTemplateManager:
                         "⚠️ Kunne ikke finne SharePoint URL fra General kanal"
                     )
 
-            # Send notification med kanal informasjon
-            general_channel_id = await self.get_general_channel_id(team_id)
-            await self.send_channel_info_notification(
-                team_id=team_id,
-                team_name=team_name,
-                general_channel_id=general_channel_id,
-                admin_channel_id=admin_channel_id,
-                montasje_channel_id=montasje_channel_id,
-                planner_id=created_plan.id,
-            )
+            # STEP 6: Send welcome notification (only if channels were created)
+            if channels_were_created:
+                logging.info("📧 Sender velkomstmelding for nyopprettede kanaler...")
+                general_channel_id = await self.get_general_channel_id(team_id)
+                await self.send_channel_info_notification(
+                    team_id=team_id,
+                    team_name=team_name,
+                    general_channel_id=general_channel_id,
+                    admin_channel_id=admin_channel_id,
+                    montasje_channel_id=montasje_channel_id,
+                    planner_id=created_plan.id if created_plan else None,
+                )
+            else:
+                logging.info(
+                    "✅ Kanaler eksisterte allerede, hopper over velkomstmelding"
+                )
 
-            logging.info(f"Kopiering av mal fullført! Ny plan ID: {created_plan.id}")
+            # All steps completed successfully!
+            logging.info(f"✅ Team setup fullført for {team_name}!")
 
             return {
-                "id": created_plan.id,
-                "title": created_plan.title,
-                "owner": created_plan.owner,
-                "created_date_time": created_plan.created_date_time,
-                "tab_added": tab_success,
+                "id": created_plan.id if created_plan else None,
+                "title": created_plan.title if created_plan else None,
+                "owner": created_plan.owner if created_plan else None,
+                "created_date_time": (
+                    created_plan.created_date_time if created_plan else None
+                ),
                 "admin_channel_id": admin_channel_id,
                 "montasje_channel_id": montasje_channel_id,
             }
@@ -2194,7 +2233,7 @@ class PlannerTemplateManager:
         description: str,
         is_private: bool = False,
         membership_type: Optional[str] = None,
-    ) -> Optional[str]:
+    ) -> Optional[tuple[str, bool]]:
         """
         Sjekker om en kanal eksisterer, og oppretter den hvis den ikke finnes.
 
@@ -2206,7 +2245,9 @@ class PlannerTemplateManager:
             membership_type: Membership type: "standard", "private", eller "shared"
 
         Returns:
-            Optional[str]: Channel ID hvis vellykket, None ved feil
+            Optional[tuple[str, bool]]: Tuple med (channel_id, was_created) hvis vellykket, None ved feil
+            - channel_id: ID til kanalen
+            - was_created: True hvis kanalen ble opprettet, False hvis den allerede eksisterte
         """
         try:
             # Først, sjekk om kanalen allerede eksisterer
@@ -2227,19 +2268,48 @@ class PlannerTemplateManager:
                     if response.status == 200:
                         result = await response.json()
                         channels = result.get("value", [])
+
+                        # Log all channels for debugging
+                        logging.info(f"Fant {len(channels)} kanaler i teamet")
+                        for ch in channels:
+                            logging.info(
+                                f"  - '{ch.get('displayName')}' (type: {ch.get('membershipType')}, id: {ch.get('id')})"
+                            )
+
+                        # Look for matching channel name
                         for channel in channels:
-                            if channel.get("displayName") == channel_name:
+                            channel_display_name = channel.get("displayName", "")
+                            # Exact match
+                            if channel_display_name == channel_name:
                                 channel_id = channel.get("id")
-                                logging.info(
-                                    f"Kanal '{channel_name}' eksisterer allerede med ID: {channel_id}"
-                                )
-                                return channel_id
+                                channel_membership_type = channel.get("membershipType")
+
+                                # Verify the channel is actually accessible
+                                verify_url = f"https://graph.microsoft.com/v1.0/teams/{team_id}/channels/{channel_id}"
+                                async with session.get(
+                                    verify_url, headers=headers
+                                ) as verify_response:
+                                    if verify_response.status == 200:
+                                        logging.info(
+                                            f"✅ Fant og verifiserte kanal '{channel_name}' (ID: {channel_id}, type: {channel_membership_type})"
+                                        )
+                                        return (
+                                            channel_id,
+                                            False,
+                                        )  # Eksisterte allerede og er tilgjengelig
+                                    else:
+                                        logging.warning(
+                                            f"⚠️ Kanal '{channel_name}' finnes i listen men er ikke tilgjengelig (status: {verify_response.status}). Behandler som ikke-eksisterende."
+                                        )
 
             # Kanalen eksisterer ikke, opprett den
-            logging.info(f"Kanal '{channel_name}' eksisterer ikke, oppretter ny...")
-            return await self.create_channel(
+            logging.info(f"🆕 Kanal '{channel_name}' eksisterer ikke, oppretter ny...")
+            new_channel_id = await self.create_channel(
                 team_id, channel_name, description, is_private, membership_type
             )
+            if new_channel_id:
+                return (new_channel_id, True)  # Ble akkurat opprettet
+            return None
 
         except Exception as e:
             logging.error(
