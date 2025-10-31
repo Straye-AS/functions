@@ -114,16 +114,6 @@ class TeamProcessorByID:
         print(f"📋 Team Name: {team_name}")
         print(f"🔒 Visibility: {team_info['visibility']}")
 
-        if "Testing" not in team_name:
-            result = {
-                "team_id": team_id,
-                "team_name": team_name,
-                "status": "skipped",
-                "message": "Team does not contain 'Testing' in name",
-            }
-            print(f"⚠️  Team does not contain 'Testing' in name - skipping")
-            return result
-
         # Check if archived
         if team_info["archived"]:
             result = {

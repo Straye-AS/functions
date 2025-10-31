@@ -34,8 +34,22 @@ class PlannerTemplateManager:
         self.developers = ["robot@straye.no"]
 
         # Produksjons-medlemmer (kun lagt til som team members når testing_mode = False)
-        self.production_team_members = ["andreas@straye.no"]
-        self.production_admin_channel_members = ["andreas@straye.no"]
+        self.production_team_members = [
+            "andreas@straye.no",
+            "linus@straye.no",
+            "jacek.sztyl@straye.no",
+            "maksymillian@straye.no",
+            "jenil@straye.no",
+            "stefan.lindblad@straye.no",
+        ]
+        self.production_admin_channel_members = [
+            "andreas@straye.no",
+            "linus@straye.no",
+            "jacek.sztyl@straye.no",
+            "maksymillian@straye.no",
+            "jenil@straye.no",
+            "stefan.lindblad@straye.no",
+        ]
 
         # Admin channel owners (alltid kun utviklere)
         self.admin_channel_owners = self.developers
@@ -285,6 +299,12 @@ class PlannerTemplateManager:
             # Track if we need to add members and send welcome messages (only if any channel was created)
             channels_were_created = admin_was_created or montasje_was_created
 
+            # Track if we need to add tabs and send welcome messages (even if channels already exist)
+            # This ensures proper setup even when channels exist but aren't configured correctly
+            should_setup_channels = (
+                admin_channel_id is not None or montasje_channel_id is not None
+            )
+
             # STEP 4: Add members to newly created channels only
             if channels_were_created:
                 logging.info("👥 Legger til medlemmer i nyopprettede kanaler...")
@@ -347,8 +367,8 @@ class PlannerTemplateManager:
                     "✅ Kanaler eksisterte allerede, hopper over medlemsopprettelse"
                 )
 
-            # STEP 5: Add SharePoint tab to admin channel (only if it was just created)
-            if admin_was_created and admin_channel_id:
+            # STEP 5: Add SharePoint tab to admin channel (if admin channel exists)
+            if admin_channel_id:
                 logging.info(
                     "⏳ Venter 2 minutter for at private kanal skal være klar for SharePoint..."
                 )
@@ -385,9 +405,9 @@ class PlannerTemplateManager:
                         "⚠️ Kunne ikke finne SharePoint URL fra General kanal"
                     )
 
-            # STEP 6: Send welcome notification (only if channels were created)
-            if channels_were_created:
-                logging.info("📧 Sender velkomstmelding for nyopprettede kanaler...")
+            # STEP 6: Send welcome notification (if channels exist)
+            if should_setup_channels:
+                logging.info("📧 Sender velkomstmelding for kanaler...")
                 general_channel_id = await self.get_general_channel_id(team_id)
                 await self.send_channel_info_notification(
                     team_id=team_id,
