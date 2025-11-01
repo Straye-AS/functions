@@ -5,6 +5,7 @@ import azure.functions as func
 from azure.ai.projects import AIProjectClient
 from azure.identity import DefaultAzureCredential
 from azure.ai.agents.models import ListSortOrder
+from teamsplanner.get_teams import TeamsProcessor
 
 # from teamsplanner.get_teams import TeamsProcessor
 
@@ -115,10 +116,10 @@ async def teamsplanner(teamsTimer: func.TimerRequest) -> None:
         logging.info("The timer is past due!")
 
     try:
-        # processor = TeamsProcessor()
+        processor = TeamsProcessor()
         # Automatisk initialisering ved første kall
-        # response_data = await processor.get_teams_async()
-        response_data = {"message": "TeamsProcessor temporarily disabled"}
+        response_data = await processor.get_teams_async()
+        # response_data = {"message": "TeamsProcessor temporarily disabled"}
 
         logging.info(f"Success! {response_data}")
 

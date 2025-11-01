@@ -37,16 +37,16 @@ class PlannerTemplateManager:
         self.production_team_members = [
             "andreas@straye.no",
             "linus@straye.no",
-            "jacek.sztyl@straye.no",
-            "maksymillian@straye.no",
+            "jacek.sztyler@straye.no",
+            "maksymilian@straye.no",
             "jenil@straye.no",
             "stefan.lindblad@straye.no",
         ]
         self.production_admin_channel_members = [
             "andreas@straye.no",
             "linus@straye.no",
-            "jacek.sztyl@straye.no",
-            "maksymillian@straye.no",
+            "jacek.sztyler@straye.no",
+            "maksymilian@straye.no",
             "jenil@straye.no",
             "stefan.lindblad@straye.no",
         ]
