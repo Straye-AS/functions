@@ -36,19 +36,19 @@ class PlannerTemplateManager:
         # Produksjons-medlemmer (kun lagt til som team members når testing_mode = False)
         self.production_team_members = [
             "andreas@straye.no",
-            "linus@straye.no",
-            "jacek.sztyler@straye.no",
-            "maksymilian@straye.no",
-            "jenil@straye.no",
-            "stefan.lindblad@straye.no",
+            # "linus@straye.no",
+            # "jacek.sztyler@straye.no",
+            # "maksymilian@straye.no",
+            # "jenil@straye.no",
+            # "stefan.lindblad@straye.no",
         ]
         self.production_admin_channel_members = [
             "andreas@straye.no",
-            "linus@straye.no",
-            "jacek.sztyler@straye.no",
-            "maksymilian@straye.no",
-            "jenil@straye.no",
-            "stefan.lindblad@straye.no",
+            # "linus@straye.no",
+            # "jacek.sztyler@straye.no",
+            # "maksymilian@straye.no",
+            # "jenil@straye.no",
+            # "stefan.lindblad@straye.no",
         ]
 
         # Admin channel owners (alltid kun utviklere)
