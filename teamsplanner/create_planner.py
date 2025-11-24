@@ -368,7 +368,7 @@ class PlannerTemplateManager:
                 )
 
             # STEP 5: Add SharePoint tab to admin channel (if admin channel exists)
-            if admin_channel_id:
+            if admin_channel_id and should_setup_channels:
                 logging.info(
                     "⏳ Venter 2 minutter for at private kanal skal være klar for SharePoint..."
                 )
@@ -1349,8 +1349,8 @@ class PlannerTemplateManager:
                 "teamsApp@odata.bind": "https://graph.microsoft.com/v1.0/appCatalogs/teamsApps/com.microsoft.teamspace.tab.planner",
                 "configuration": {
                     "entityId": plan_id,
-                    "contentUrl": f"https://tasks.office.com/{tenant_id}/Home/PlannerFrame?page=7&planId={plan_id}",
-                    "websiteUrl": f"https://tasks.office.com/{tenant_id}/Home/PlanViews/{plan_id}",
+                    "contentUrl": f"https://tasks.office.com/{tenant_id}/Home/PlannerFrame?page=7&planId={plan_id}&mkt=nb-NO",
+                    "websiteUrl": f"https://tasks.office.com/{tenant_id}/Home/PlanViews/{plan_id}?mkt=nb-NO",
                 },
             }
 
@@ -1372,8 +1372,8 @@ class PlannerTemplateManager:
                 tab.teams_app.id = "com.microsoft.teamspace.tab.planner"
                 tab.configuration = {
                     "entityId": plan_id,
-                    "contentUrl": f"https://tasks.office.com/{tenant_id}/Home/PlannerFrame?page=7&planId={plan_id}",
-                    "websiteUrl": f"https://tasks.office.com/{tenant_id}/Home/PlanViews/{plan_id}",
+                    "contentUrl": f"https://tasks.office.com/{tenant_id}/Home/PlannerFrame?page=7&planId={plan_id}&mkt=nb-NO",
+                    "websiteUrl": f"https://tasks.office.com/{tenant_id}/Home/PlanViews/{plan_id}?mkt=nb-NO",
                 }
 
                 # Add the tab using Graph SDK
