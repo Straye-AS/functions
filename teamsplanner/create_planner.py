@@ -368,7 +368,7 @@ class PlannerTemplateManager:
                 )
 
             # STEP 5: Add SharePoint tab to admin channel (if admin channel exists)
-            if admin_channel_id and should_setup_channels:
+            if admin_channel_id and channels_were_created:
                 logging.info(
                     "⏳ Venter 2 minutter for at private kanal skal være klar for SharePoint..."
                 )
