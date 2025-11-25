@@ -33,26 +33,61 @@ class PlannerTemplateManager:
         # Utviklere (alltid lagt til som team owners, både i testing og produksjon)
         self.developers = ["robot@straye.no"]
 
-        # Produksjons-medlemmer (kun lagt til som team members når testing_mode = False)
-        self.production_team_members = [
-            "andreas@straye.no",
-            # "linus@straye.no",
-            # "jacek.sztyler@straye.no",
-            # "maksymilian@straye.no",
-            # "jenil@straye.no",
-            # "stefan.lindblad@straye.no",
-        ]
-        self.production_admin_channel_members = [
-            "andreas@straye.no",
-            # "linus@straye.no",
-            # "jacek.sztyler@straye.no",
-            # "maksymilian@straye.no",
-            # "jenil@straye.no",
-            # "stefan.lindblad@straye.no",
-        ]
-
         # Admin channel owners (alltid kun utviklere)
         self.admin_channel_owners = self.developers
+
+        # Company-specific owner mapping based on key members
+        # Maps key member email to (company_name, list_of_owners)
+        self.company_owner_mapping = {
+            "henrik@straye.no": ("Tak", [
+                "henrik@straye.no",
+                "robert.russvoll@straye.no",
+                "marek@straye.no",
+                "kristoffer.lund@straye.no",
+                "atle@straye.no",
+                "dennis@straye.no",
+                "andreas@straye.no"
+            ]),
+            "christer@straye.no": ("Hybridbygg", [
+                "christer@straye.no",
+                "julie@straye.no",
+                "daniel@straye.no",
+                "gjermund@straye.no",
+                "arne@straye.no",
+                "karoline@straye.no",
+                "jenil@straye.no",
+                "andreas@straye.no",
+                "dennis@straye.no",
+                "lg@straye.no"
+            ]),
+            "ali@straye.no": ("Stålbygg", [
+                "daniel@straye.no",
+                "jenil@straye.no",
+                "dennis@straye.no",
+                "ali@straye.no",
+                "camilla@straye.no",
+                "jan@straye.no",
+                "trond@straye.no",
+                "andreas@straye.no",
+                "jacek.sztyler@straye.no",
+                "fredrik@straye.no",
+                "maksymilian@straye.no",
+                "linus@straye.no",
+                "christian@straye.no",
+                "christian.quist@straye.no"
+                "tommy@straye.no"
+            ]),
+            "sven@straye.no": ("Industri", [
+                "sven@straye.no",
+                "frode@straye.no",
+                "jenil@straye.no",
+                "daniel@straye.no",
+                "dennis@straye.no",
+                "ali@straye.no",
+                "camilla@straye.no",
+                "andreas@straye.no"
+            ])
+        }
 
         # Cache
         self._template_plan: Optional[PlannerPlan] = None
@@ -71,28 +106,6 @@ class PlannerTemplateManager:
         """Validerer påkrevde miljøvariabler."""
         if not self.template_planner_id:
             raise ValueError("Mangler påkrevd miljøvariabel: TEAMS_PLANNER_TEMPLATE_ID")
-
-    def get_team_members(self) -> list[str]:
-        """
-        Returnerer listen over team medlemmer basert på testing mode.
-
-        Returns:
-            list[str]: Liste med e-postadresser
-        """
-        if self.testing_mode:
-            return []  # Ingen ekstra medlemmer i testing mode
-        return self.production_team_members
-
-    def get_admin_channel_members(self) -> list[str]:
-        """
-        Returnerer listen over admin channel medlemmer basert på testing mode.
-
-        Returns:
-            list[str]: Liste med e-postadresser
-        """
-        if self.testing_mode:
-            return []  # Ingen ekstra medlemmer i testing mode
-        return self.production_admin_channel_members
 
     def get_access_token(self) -> Optional[str]:
         """
@@ -178,23 +191,29 @@ class PlannerTemplateManager:
                 )
                 return None
 
-            # Sikre at utviklere (robot) er team OWNERS for shared channels
+            # Sikre at utviklere (robot) er team OWNERS
             logging.info(
                 f"Sikrer at {len(self.developers)} utvikler(e) er team owners..."
             )
             for email in self.developers:
                 await self.ensure_user_in_team(team_id, email, as_owner=True)
 
-            # Sikre at alle nødvendige brukere er medlemmer av teamet
-            team_members = self.get_team_members()
-            if team_members:
-                logging.info(
-                    f"Sikrer at {len(team_members)} bruker(e) er medlemmer av teamet..."
-                )
-                for email in team_members:
-                    await self.ensure_user_in_team(team_id, email, as_owner=False)
+            # Bestem company-spesifikke owners og legg dem til som team owners
+            if not self.testing_mode:
+                company_name, company_owners = await self.determine_company_owners(team_id)
+
+                if company_name and company_owners:
+                    logging.info(
+                        f"🏢 Legger til {len(company_owners)} {company_name}-spesifikke owners som team owners..."
+                    )
+                    for email in company_owners:
+                        await self.ensure_user_in_team(team_id, email, as_owner=True)
+                else:
+                    logging.info(
+                        "ℹ️ Ingen company-spesifikke owners funnet - kun utviklere er team owners"
+                    )
             else:
-                logging.info("Testing mode: Hopper over ekstra team medlemmer")
+                logging.info("Testing mode: Hopper over company-spesifikke team owners")
 
             # STEP 1: Check if planner exists, if not create it
             logging.info("📋 Sjekker om team har planner...")
@@ -315,6 +334,19 @@ class PlannerTemplateManager:
                 )
                 await asyncio.sleep(5)
 
+                # Bestem company-spesifikke owners basert på teammedlemmer
+                company_name, company_owners = await self.determine_company_owners(team_id)
+                company_owners_lower = [email.lower() for email in company_owners]
+
+                if company_name:
+                    logging.info(
+                        f"🏢 Bruker {company_name}-spesifikke owners: {len(company_owners)} personer"
+                    )
+                else:
+                    logging.info(
+                        "🏢 Ingen company-spesifikk konfigurasjon funnet, bruker kun admin owners"
+                    )
+
                 # Hent ALLE medlemmer i teamet med deres roller
                 all_team_members = await self.get_all_team_members_with_roles(team_id)
 
@@ -326,7 +358,7 @@ class PlannerTemplateManager:
                     # Legg til medlemmer i admin kanal hvis den ble opprettet
                     if admin_was_created and admin_channel_id:
                         logging.info(
-                            "Legger til alle teammedlemmer i Administrasjon kanal med samme roller..."
+                            "Legger til alle teammedlemmer i Administrasjon kanal..."
                         )
                         for member in all_team_members:
                             member_email = member["email"]
@@ -334,18 +366,19 @@ class PlannerTemplateManager:
                             if member_email.lower() not in [
                                 e.lower() for e in self.admin_channel_owners
                             ]:
-                                # Bruk samme rolle som i teamet
+                                # Bestem om brukeren skal være owner basert på company-listen
+                                should_be_owner = member_email.lower() in company_owners_lower
                                 await self.add_member_to_channel(
                                     team_id,
                                     admin_channel_id,
                                     member_email,
-                                    is_owner=member["is_owner"],
+                                    is_owner=should_be_owner,
                                 )
 
                     # Legg til medlemmer i montasje kanal hvis den ble opprettet
                     if montasje_was_created and montasje_channel_id:
                         logging.info(
-                            "Legger til alle teammedlemmer individuelt i Montasje kanal med samme roller..."
+                            "Legger til alle teammedlemmer individuelt i Montasje kanal..."
                         )
                         for member in all_team_members:
                             member_email = member["email"]
@@ -353,12 +386,13 @@ class PlannerTemplateManager:
                             if member_email.lower() not in [
                                 e.lower() for e in self.admin_channel_owners
                             ]:
-                                # Bruk samme rolle som i teamet
+                                # Bestem om brukeren skal være owner basert på company-listen
+                                should_be_owner = member_email.lower() in company_owners_lower
                                 await self.add_member_to_channel(
                                     team_id,
                                     montasje_channel_id,
                                     member_email,
-                                    is_owner=member["is_owner"],
+                                    is_owner=should_be_owner,
                                 )
                 else:
                     logging.warning("Ingen teammedlemmer funnet å legge til i kanalene")
@@ -2074,6 +2108,47 @@ class PlannerTemplateManager:
         except Exception as e:
             logging.error(f"Feil ved henting av teammedlemmer: {str(e)}")
             return []
+
+    async def determine_company_owners(self, team_id: str) -> tuple[Optional[str], list[str]]:
+        """
+        Bestemmer hvilke brukere som skal være owners basert på hvilken company member som er i teamet.
+
+        Logikk:
+        - Hvis henrik@straye.no er medlem: bruk Tak-listen
+        - Hvis christer@straye.no er medlem: bruk Hybridbygg-listen
+        - Hvis ali@straye.no er medlem: bruk Stålbygg-listen
+        - Hvis sven@straye.no er medlem: bruk Industri-listen
+        - Hvis ingen er funnet: bruk tom liste (bare admin_channel_owners vil bli lagt til)
+
+        Args:
+            team_id: ID til teamet
+
+        Returns:
+            tuple[Optional[str], list[str]]: (company_name, list_of_owner_emails)
+        """
+        try:
+            # Hent alle medlemmer i teamet
+            all_members = await self.get_all_team_members_with_roles(team_id)
+            member_emails = [m["email"].lower() for m in all_members]
+
+            logging.info(f"Sjekker company-tilhørighet blant {len(member_emails)} medlemmer")
+
+            # Sjekk hver key member i prioritert rekkefølge
+            for key_member, (company_name, owner_list) in self.company_owner_mapping.items():
+                if key_member.lower() in member_emails:
+                    logging.info(
+                        f"✅ Fant {key_member} i teamet - bruker {company_name} owner-liste med {len(owner_list)} medlemmer"
+                    )
+                    return company_name, owner_list
+
+            logging.info(
+                "ℹ️ Ingen company key members funnet i teamet - bruker kun admin_channel_owners"
+            )
+            return None, []
+
+        except Exception as e:
+            logging.error(f"Feil ved bestemmelse av company owners: {str(e)}")
+            return None, []
 
     async def ensure_user_in_team(
         self, team_id: str, user_email: str, as_owner: bool = False
