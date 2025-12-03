@@ -122,6 +122,51 @@ class PlannerTemplateManager:
             logging.error(f"Feil ved henting av access token: {str(e)}")
             return None
 
+    async def _is_robot_already_owner(self, team_id: str, robot_email: str) -> bool:
+        """
+        Sjekker om robot@straye.no allerede er owner av teamet.
+
+        Args:
+            team_id: ID til teamet
+            robot_email: Email til robot brukeren
+
+        Returns:
+            bool: True hvis robot er owner, False ellers
+        """
+        try:
+            if not self._access_token:
+                self._access_token = self.get_access_token()
+                if not self._access_token:
+                    logging.warning("Kunne ikke hente access token for å sjekke robot owner status")
+                    return False
+
+            check_url = f"https://graph.microsoft.com/v1.0/teams/{team_id}/members"
+            headers = {
+                "Authorization": f"Bearer {self._access_token}",
+                "Content-Type": "application/json",
+            }
+
+            async with aiohttp.ClientSession() as session:
+                async with session.get(check_url, headers=headers) as response:
+                    if response.status == 200:
+                        result = await response.json()
+                        members = result.get("value", [])
+                        for member in members:
+                            member_email = member.get("email") or member.get("userPrincipalName")
+                            if member_email and member_email.lower() == robot_email.lower():
+                                member_roles = member.get("roles", [])
+                                is_owner = "owner" in member_roles
+                                if is_owner:
+                                    return True
+                        return False
+                    else:
+                        logging.warning(f"Kunne ikke hente medlemmer for team {team_id}, status: {response.status}")
+                        return False
+
+        except Exception as e:
+            logging.warning(f"Feil ved sjekk om robot er owner: {str(e)}")
+            return False
+
     async def get_template_planner(self) -> Optional[PlannerPlan]:
         """
         Henter og cacher mal-planneren.
@@ -190,6 +235,14 @@ class PlannerTemplateManager:
                     f"⏭️  SKIPPING team '{team_name}' - testing mode active and team name does not contain 'Testing'"
                 )
                 return None
+
+            # Sjekk om robot@straye.no allerede er owner - hvis ja, hopp over all prosessering
+            robot_email = self.developers[0]  # robot@straye.no
+            if await self._is_robot_already_owner(team_id, robot_email):
+                logging.info(
+                    f"✅ Team {team_id} har allerede {robot_email} som owner - hopper over all prosessering"
+                )
+                return True  # Return success så teamet markeres som prosessert
 
             # Sikre at utviklere (robot) er team OWNERS
             logging.info(

@@ -4,25 +4,21 @@ from typing import List, Dict, Set, Optional, Tuple
 from azure.identity import ClientSecretCredential
 from msgraph import GraphServiceClient
 from msgraph.generated.models.o_data_errors.o_data_error import ODataError
-from azure.data.tables import TableServiceClient
 import datetime
 from .create_planner import PlannerTemplateManager
+from .database import DatabaseConnection
 
 
 class TeamsProcessor:
     """
-    Klasse for å prosessere Microsoft Teams og håndtere deres status i Azure Table Storage.
+    Klasse for å prosessere Microsoft Teams og håndtere deres status i PostgreSQL database.
     """
 
     def __init__(self):
-        # Konstanter
-        self.TABLE_NAME = "processedteams"
-        self.PARTITION_KEY = "teams"
-
         # Klienter som vil bli initialisert
         self.credentials: Optional[ClientSecretCredential] = None
         self.graph_client: Optional[GraphServiceClient] = None
-        self.table_client: Optional[TableServiceClient] = None
+        self.db: Optional[DatabaseConnection] = None
         self.planner_manager: Optional[PlannerTemplateManager] = None
 
         # State
@@ -31,7 +27,7 @@ class TeamsProcessor:
 
     async def initialize(self) -> None:
         """
-        Initialiserer Graph API klient, Table Storage og henter prosesserte teams.
+        Initialiserer Graph API klient, database og henter prosesserte teams.
         """
         if self.is_initialized:
             return
@@ -39,12 +35,12 @@ class TeamsProcessor:
         # Initialiser Graph API klient
         await self._initialize_graph_client()
 
-        # Initialiser Table Storage
-        await self._initialize_table_client()
+        # Initialiser database
+        await self._initialize_database()
 
         # Hent prosesserte teams
-        if self.table_client:
-            self.processed_team_ids = await self._get_processed_team_ids()
+        if self.db:
+            self.processed_team_ids = await self.db.get_all_processed_team_ids()
 
         self.is_initialized = True
         logging.info("TeamsProcessor er initialisert")
@@ -75,55 +71,18 @@ class TeamsProcessor:
         )
         logging.info("Graph API klient initialisert")
 
-    async def _initialize_table_client(self) -> None:
+    async def _initialize_database(self) -> None:
         """
-        Initialiserer Table Storage klient.
+        Initialiserer database tilkobling.
         """
         try:
-            storage_connection_string = os.getenv("AZURE_STORAGE_CONNECTION_STRING")
-            if not storage_connection_string:
-                raise ValueError(
-                    "Mangler AZURE_STORAGE_CONNECTION_STRING miljøvariabel"
-                )
-
-            table_service_client = TableServiceClient.from_connection_string(
-                storage_connection_string
-            )
-
-            try:
-                self.table_client = table_service_client.get_table_client(
-                    self.TABLE_NAME
-                )
-                logging.info(f"Koblet til tabell: {self.TABLE_NAME}")
-            except Exception:
-                logging.info(f"Oppretter ny tabell: {self.TABLE_NAME}")
-                self.table_client = table_service_client.create_table(self.TABLE_NAME)
+            self.db = DatabaseConnection()
+            await self.db.initialize()
+            logging.info("Database tilkobling initialisert")
 
         except Exception as e:
-            logging.error(f"Feil ved initialisering av Table Storage: {str(e)}")
+            logging.error(f"Feil ved initialisering av database: {str(e)}")
             raise
-
-    async def _get_processed_team_ids(self) -> Set[str]:
-        """
-        Henter alle prosesserte team-IDer fra Azure Table Storage.
-
-        Returns:
-            Set[str]: Mengde med prosesserte team-IDer
-        """
-        if not self.table_client:
-            logging.error("Table client er ikke initialisert")
-            return set()
-
-        try:
-            query = f"PartitionKey eq '{self.PARTITION_KEY}'"
-            processed_teams = {
-                entity["RowKey"] for entity in self.table_client.query_entities(query)
-            }
-            logging.info(f"Fant {len(processed_teams)} prosesserte teams i tabellen")
-            return processed_teams
-        except Exception as e:
-            logging.error(f"Feil ved henting av prosesserte team-IDer: {str(e)}")
-            return set()
 
     async def process_team(self, team) -> Optional[Dict]:
         """
@@ -147,13 +106,16 @@ class TeamsProcessor:
         logging.info(f"Fant nytt team: {team.id} ({team.display_name})")
 
         # Lag en ny planner for teamet og marker team som prosessert
+        # (create_planner_for_team vil selv sjekke om robot allerede er owner og hoppe over hvis nødvendig)
         try:
             planner_result = await self.planner_manager.create_planner_for_team(
                 team.id, team.display_name, team.visibility
             )
 
             if planner_result:
-                await self.mark_team_as_processed(team.id)
+                await self.mark_team_as_processed(
+                    team.id, team.display_name, str(team.visibility)
+                )
                 logging.info(
                     f"Opprettet planner og markerte team {team.id} som prosessert"
                 )
@@ -224,31 +186,25 @@ class TeamsProcessor:
             logging.error(f"Uventet feil: {str(e)}")
             raise Exception(f"Uventet feil: {str(e)}")
 
-    async def mark_team_as_processed(self, team_id: str) -> bool:
+    async def mark_team_as_processed(
+        self, team_id: str, team_name: str, visibility: str
+    ) -> bool:
         """
-        Marker et team som prosessert i Table Storage.
+        Marker et team som prosessert i database.
 
         Args:
             team_id: ID til teamet som skal markeres
+            team_name: Navn på teamet
+            visibility: Synlighet av teamet
 
         Returns:
             bool: True hvis operasjonen var vellykket
         """
-        if not self.table_client:
-            raise RuntimeError("Table client er ikke initialisert")
+        if not self.db:
+            raise RuntimeError("Database er ikke initialisert")
 
         try:
-            # Opprett entity for prosessert team
-            entity = {
-                "PartitionKey": self.PARTITION_KEY,
-                "RowKey": team_id,
-                "ProcessedAt": datetime.datetime.now(datetime.UTC).isoformat(),
-            }
-
-            logging.info(f"Forsøker å upsertte entity: {entity}")
-            self.table_client.upsert_entity(entity=entity)
-            logging.info(f"Vellykket upsert av entity for team {team_id}")
-            return True
+            return await self.db.mark_team_as_processed(team_id, team_name, visibility)
 
         except Exception as e:
             logging.error(f"Feil ved markering av team som prosessert: {str(e)}")
