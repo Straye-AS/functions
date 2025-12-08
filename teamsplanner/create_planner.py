@@ -457,9 +457,9 @@ class PlannerTemplateManager:
             # STEP 5: Add SharePoint tab to admin channel (if admin channel exists)
             if admin_channel_id and channels_were_created:
                 logging.info(
-                    "⏳ Venter 2 minutter for at private kanal skal være klar for SharePoint..."
+                    "⏳ Venter 80 sekunder for at private kanal skal være klar for SharePoint..."
                 )
-                await asyncio.sleep(120)  # Wait 2 minutes initially
+                await asyncio.sleep(80)  # Wait 80 sekunder initially
 
                 # Get the SharePoint URL from the General channel's Files tab
                 general_channel_id = await self.get_general_channel_id(team_id)
